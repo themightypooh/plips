@@ -23,7 +23,9 @@ const (
 	modeRoom
 )
 
-const topH, botH = 48, 52
+// Two bars along the top: tabs, then the current screen's buttons. Both
+// stay on screen whatever the window size.
+const topH, botH = 48, 50
 
 type Game struct {
 	set  Settings
@@ -55,7 +57,10 @@ func main() {
 
 	ebiten.SetWindowTitle("Plips")
 	ebiten.SetTPS(60)
-	ebiten.SetWindowSize(1300, 860)
+	mw, mh := ebiten.Monitor().Size()
+	ww, wh := min(1300, mw*9/10), min(860, mh*8/10)
+	ebiten.SetWindowSize(ww, wh)
+	ebiten.SetWindowPosition((mw-ww)/2, (mh-wh)/3)
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
 	err := ebiten.RunGame(g)
 	g.persist()
@@ -93,15 +98,15 @@ func (g *Game) view(w, h int) (s, ox, oy float64) {
 	if s >= 1 {
 		s = math.Floor(s*2) / 2
 	}
-	return s, (float64(g.sw) - float64(w)*s) / 2, topH + (float64(g.sh-topH-botH)-float64(h)*s)/2
+	return s, (float64(g.sw) - float64(w)*s) / 2, topH + botH + (float64(g.sh-topH-botH)-float64(h)*s)/2
 }
 
 func (g *Game) Update() error {
 	u := &g.ui
 	u.Begin()
-	sw, sh := float64(g.sw), float64(g.sh)
+	sw := float64(g.sw)
 	u.Panel(rect{0, 0, sw, topH})
-	u.Panel(rect{0, sh - botH, sw, botH})
+	u.Panel(rect{0, topH, sw, botH})
 
 	// top bar: tabs
 	x := 12.0
@@ -115,14 +120,17 @@ func (g *Game) Update() error {
 	}
 
 	cx, cy := ebiten.CursorPosition()
-	by := sh - botH + 11
+	by := float64(topH) + 10
 	switch g.mode {
 	case modeGallery:
 		g.galleryBar(by)
 		s, ox, oy := g.view(galleryW, galleryH)
 		sx, sy := float32((float64(cx)-ox)/s), float32((float64(cy)-oy)/s)
 		inside := !u.OverUI() && sx >= 0 && sy >= 0 && sx < galleryW && sy < galleryH
-		g.gal.Update(sx, sy, inside, inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft))
+		if g.gal.Update(sx, sy, inside, inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft),
+			inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonRight)) {
+			g.starToast()
+		}
 	case modeRoom:
 		g.roomBar(by)
 		s, ox, oy := g.view(sim.RoomW, sim.RoomH)
@@ -144,6 +152,16 @@ func (g *Game) Update() error {
 	return nil
 }
 
+func (g *Game) starToast() {
+	if gn, ok := g.gal.Selected(); ok {
+		if g.gal.IsStarred(gn) {
+			g.say(fmt.Sprintf("Starred. You have %d under Starred", len(g.gal.stars)))
+		} else {
+			g.say("Unstarred")
+		}
+	}
+}
+
 func (g *Game) galleryBar(y float64) {
 	u, gal := &g.ui, g.gal
 	sel, has := gal.Selected()
@@ -162,6 +180,7 @@ func (g *Game) galleryBar(y float64) {
 	}
 	if step(u.Button(x, y, starLabel, false, !has)) {
 		gal.ToggleStar()
+		g.starToast()
 	}
 	if step(u.Button(x, y, "Put in room", false, !has || g.room.Full())) {
 		if p := g.room.Hatch(sel); p != nil {
@@ -252,7 +271,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	msg := ""
 	switch g.mode {
 	case modeGallery:
-		msg = g.gal.Caption() + "   ·   click a plip to select it"
+		msg = g.gal.Caption() + "   ·   click a plip to select it, right-click to star it"
 	case modeRoom:
 		msg = "tap: drop   hold: stream   right-click: splash   on a plip: left pets, right pokes"
 	}

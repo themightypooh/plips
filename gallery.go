@@ -134,15 +134,21 @@ func (g *Gallery) ToggleStar() {
 	save("favourites.json", g.stars)
 }
 
-// Update steps the cells; (sx, sy) is the cursor in gallery pixels.
-func (g *Gallery) Update(sx, sy float32, inside, click bool) {
+// Update steps the cells; (sx, sy) is the cursor in gallery pixels. It
+// reports whether a right-click starred or unstarred something.
+func (g *Gallery) Update(sx, sy float32, inside, click, rightClick bool) bool {
 	g.hover = -1
+	starred := false
 	if inside {
 		i := int(sy)/cellH*gCols + int(sx)/cellW
 		if i < len(g.cells) {
 			g.hover = i
-			if click {
+			if click || rightClick {
 				g.selected = i
+			}
+			if rightClick {
+				g.ToggleStar()
+				starred = true
 			}
 		}
 	}
@@ -150,6 +156,7 @@ func (g *Gallery) Update(sx, sy float32, inside, click bool) {
 		c.w.Step()
 		c.w.Step()
 	}
+	return starred
 }
 
 func (g *Gallery) Draw(screen *ebiten.Image, ox, oy, s float64) {
@@ -186,11 +193,11 @@ func (g *Gallery) Draw(screen *ebiten.Image, ox, oy, s float64) {
 		case i == g.hover:
 			vector.StrokeRect(screen, x+2, y+2, cw-4, ch-4, 1, colDim, false)
 		}
-		label := c.g.Describe()
+		label, col := c.g.Describe(), colDim
 		if g.IsStarred(c.g) {
-			label = "* " + label
+			label, col = "* STARRED  "+label, colAccent
 		}
-		drawText(screen, label, float64(x)+10, float64(y+ch)-24, 13, colDim)
+		drawText(screen, label, float64(x)+10, float64(y+ch)-24, 13, col)
 	}
 	if g.starView && len(g.cells) == 0 {
 		drawText(screen, "Nothing starred yet. Go back to the batch, select a plip you like and press Star.", ox+20, oy+20, 15, colDim)
