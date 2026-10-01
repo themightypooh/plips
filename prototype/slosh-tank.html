@@ -1,0 +1,388 @@
+<title>Slosh Tank</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen&family=Martian+Mono:wght@400;600&display=swap">
+<style>
+  /* Layout: one dark tank, controls docked underneath like a lab bench. Single dark look by choice. */
+  :root {
+    --bg: #0d1012;
+    --panel: #161b1e;
+    --line: #262e33;
+    --fg: #c9d1cc;
+    --dim: #7d8a84;
+    --accent: #9fc2b0;
+    --display: "Silkscreen", ui-monospace, monospace;
+    --mono: "Martian Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 12px/1.6 var(--mono);
+    padding-inline: 16px; padding-block: 20px;
+    box-sizing: border-box;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font: 22px/1 var(--display); letter-spacing: .04em; margin: 0; color: var(--accent); }
+  .hint { color: var(--dim); }
+  canvas {
+    width: 100%; max-width: 100%; aspect-ratio: 192 / 108;
+    image-rendering: pixelated; image-rendering: crisp-edges;
+    display: block; border: 1px solid var(--line); background: #000;
+    cursor: crosshair; touch-action: none;
+  }
+  .bench { display: flex; flex-wrap: wrap; gap: 14px 24px; align-items: flex-start; justify-content: space-between; }
+  .group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .label { font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--dim); }
+  .swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+  .sw {
+    font: inherit; color: var(--fg); background: var(--panel);
+    border: 1px solid var(--line); padding: 5px 9px 5px 7px; cursor: pointer;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .sw i { width: 12px; height: 12px; display: block; image-rendering: pixelated; }
+  .sw[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .sw:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn { font: inherit; background: var(--panel); color: var(--fg); border: 1px solid var(--line); padding: 5px 12px; cursor: pointer; }
+  .btn:hover, .sw:hover { border-color: var(--dim); }
+  .bar { display: flex; height: 10px; width: 240px; max-width: 100%; border: 1px solid var(--line); }
+  .bar span { display: block; height: 100%; }
+  .stats { font-variant-numeric: tabular-nums; color: var(--dim); }
+  .stats b { color: var(--fg); font-weight: 600; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>SLOSH TANK</h1>
+    <span class="hint">Click empty space to drop liquid. Click the critter to poke it.</span>
+  </header>
+
+  <canvas id="tank" width="192" height="108" aria-label="Liquid pixel critter tank"></canvas>
+
+  <div class="bench">
+    <div class="group">
+      <span class="label">Drop</span>
+      <div class="swatches" id="swatches"></div>
+    </div>
+    <div class="group">
+      <span class="label">Body is made of</span>
+      <div class="bar" id="bar"></div>
+      <span class="stats" id="stats"></span>
+    </div>
+    <div class="group">
+      <span class="label">Tank</span>
+      <div class="swatches">
+        <button class="btn" id="reset" type="button">New critter</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // ---- world ----
+  const W = 192, H = 108, FLOOR = H - 7;
+  const MAX = 3200, MAXC = 2000;
+  const R = 3.6, R2 = R * R;           // interaction radius (pixels)
+  const RHO0 = 3.2, K = 0.06, KN = 0.3; // double-density relaxation
+  const G = 0.045;
+  const DENS = 0.62;                    // particles per px² at rest (measured)
+
+  const MATS = [
+    { name: "Plasm",  c: [143, 163, 154] },
+    { name: "Ink",    c: [ 52,  82, 140] },
+    { name: "Rust",   c: [158,  74,  48] },
+    { name: "Pollen", c: [205, 162,  62] },
+    { name: "Moss",   c: [ 84, 122,  62] },
+    { name: "Milk",   c: [226, 221, 208] },
+    { name: "Tar",    c: [ 38,  34,  32] },
+  ];
+
+  const X = new Float32Array(MAX), Y = new Float32Array(MAX);
+  const PX = new Float32Array(MAX), PY = new Float32Array(MAX);
+  const VX = new Float32Array(MAX), VY = new Float32Array(MAX);
+  const CR = new Float32Array(MAX), CG = new Float32Array(MAX), CB = new Float32Array(MAX);
+  const OWN = new Uint8Array(MAX), MAT = new Uint8Array(MAX);
+  let n = 0;
+
+  const GW = Math.ceil(W / R) + 1, GH = Math.ceil(H / R) + 1;
+  const head = new Int32Array(GW * GH), next = new Int32Array(MAX);
+  const nb = new Int32Array(256), nq = new Float32Array(256);
+
+  const core = { x: 70, y: 70, tx: 70, hop: 0, face: 1, blink: 0, wander: 0, flinch: 0 };
+  let nC = 0, mx = 70, my = 70;
+
+  function add(x, y, mat, own, vx = 0, vy = 0) {
+    if (n >= MAX) return;
+    const c = MATS[mat].c, j = (Math.random() - 0.5) * 16;
+    X[n] = x; Y[n] = y; VX[n] = vx; VY[n] = vy;
+    CR[n] = c[0] + j; CG[n] = c[1] + j; CB[n] = c[2] + j;
+    OWN[n] = own; MAT[n] = mat; n++;
+  }
+  function blob(cx, cy, r, count, mat, own, vy = 0) {
+    for (let k = 0; k < count; k++) {
+      const a = Math.random() * Math.PI * 2, d = Math.sqrt(Math.random()) * r;
+      add(cx + Math.cos(a) * d, cy + Math.sin(a) * d, mat, own, 0, vy);
+    }
+  }
+
+  function reset() {
+    n = 0;
+    blob(70, FLOOR - 16, 14, 470, 0, 1);
+    blob(64, FLOOR - 20, 5, 50, 1, 1);      // a swirl of ink already inside
+    blob(150, FLOOR - 3, 6, 70, 2, 0);      // rust puddle to go eat
+    blob(110, 14, 3.5, 34, 3, 0, 0.3);      // pollen drop falling in
+    Object.assign(core, { x: 70, tx: 70, hop: 0, wander: 120 });
+  }
+
+  // ---- simulation ----
+  function grid() {
+    head.fill(-1);
+    for (let i = 0; i < n; i++) {
+      const c = ((Y[i] / R) | 0) * GW + ((X[i] / R) | 0);
+      next[i] = head[c]; head[c] = i;
+    }
+  }
+
+  function brain() {
+    // centroid + mass of the critter
+    let sx = 0, sy = 0; nC = 0;
+    for (let i = 0; i < n; i++) if (OWN[i]) { sx += X[i]; sy += Y[i]; nC++; }
+    if (nC) { mx = sx / nC; my = sy / nC; }
+    const rad = Math.sqrt(nC / (Math.PI * DENS));
+
+    // go for the nearest loose liquid on the floor, else wander
+    let best = -1, bd = 1e9;
+    if (nC < MAXC) for (let i = 0; i < n; i++) if (!OWN[i] && Y[i] > FLOOR - 12) {
+      const d = Math.abs(X[i] - core.x); if (d < bd) { bd = d; best = i; }
+    }
+    if (best >= 0) core.tx = X[best];
+    else if (--core.wander <= 0) {
+      core.tx = rad + 4 + Math.random() * (W - 2 * rad - 8);
+      core.wander = 120 + Math.random() * 220;
+      if (Math.random() < 0.6 && !core.hop) core.hop = 1;
+    }
+    core.tx = Math.max(rad * 0.7 + 2, Math.min(W - rad * 0.7 - 2, core.tx));
+    const dx = core.tx - core.x;
+    if (Math.abs(dx) > 0.5) core.face = Math.sign(dx);
+    core.x += Math.max(-0.22, Math.min(0.22, dx * 0.02));
+
+    let lift = 0;
+    if (core.hop) {
+      core.hop += 1;
+      const t = core.hop / 46;
+      lift = Math.sin(Math.min(t, 1) * Math.PI) * rad * 0.9;
+      if (t >= 1) core.hop = 0;
+    }
+    core.breath = (core.breath || 0) + 0.035;
+    core.y = FLOOR - rad * (0.8 + Math.sin(core.breath) * 0.06) - lift;
+    core.rad = rad;
+  }
+
+  function step() {
+    brain();
+    const rad = core.rad;
+    for (let i = 0; i < n; i++) {
+      VY[i] += G;
+      if (OWN[i]) {
+        const dx = core.x - X[i], dy = core.y - Y[i];
+        const d = Math.sqrt(dx * dx + dy * dy) + 1e-4;
+        VX[i] += dx * 0.0035; VY[i] += dy * 0.0035;
+        if (d > rad) { const f = (d - rad) * 0.012 / d; VX[i] += dx * f; VY[i] += dy * f; }
+      }
+      VX[i] *= 0.996; VY[i] *= 0.996;
+      const sp = VX[i] * VX[i] + VY[i] * VY[i];
+      if (sp > 9) { const s = 3 / Math.sqrt(sp); VX[i] *= s; VY[i] *= s; }
+      PX[i] = X[i]; PY[i] = Y[i];
+      X[i] += VX[i]; Y[i] += VY[i];
+      if (X[i] < 1) X[i] = 1; else if (X[i] > W - 1.01) X[i] = W - 1.01;
+      if (Y[i] < 1) Y[i] = 1; else if (Y[i] > FLOOR) Y[i] = FLOOR;
+    }
+    grid();
+    relax();
+    for (let i = 0; i < n; i++) {
+      if (X[i] < 1) X[i] = 1; else if (X[i] > W - 1.01) X[i] = W - 1.01;
+      if (Y[i] < 1) Y[i] = 1;
+      else if (Y[i] >= FLOOR) { Y[i] = FLOOR; X[i] = X[i] * 0.7 + PX[i] * 0.3; } // floor friction
+      VX[i] = X[i] - PX[i]; VY[i] = Y[i] - PY[i];
+    }
+  }
+
+  function relax() {
+    for (let i = 0; i < n; i++) {
+      const xi = X[i], yi = Y[i];
+      const cx = (xi / R) | 0, cy = (yi / R) | 0;
+      let rho = 0, rhoN = 0, m = 0;
+      for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        if (gy < 0 || gy >= GH) continue;
+        for (let gx = cx - 1; gx <= cx + 1; gx++) {
+          if (gx < 0 || gx >= GW) continue;
+          for (let j = head[gy * GW + gx]; j !== -1; j = next[j]) {
+            if (j === i) continue;
+            const dx = X[j] - xi, dy = Y[j] - yi, d2 = dx * dx + dy * dy;
+            if (d2 < R2 && m < 256) {
+              const q = 1 - Math.sqrt(d2) / R;
+              rho += q * q; rhoN += q * q * q;
+              nb[m] = j; nq[m] = q; m++;
+            }
+          }
+        }
+      }
+      const P = K * (rho - RHO0), PN = KN * rhoN;
+      let ddx = 0, ddy = 0;
+      const own = OWN[i];
+      for (let k = 0; k < m; k++) {
+        const j = nb[k], q = nq[k];
+        let dx = X[j] - xi, dy = Y[j] - yi;
+        const d = Math.sqrt(dx * dx + dy * dy) || 1e-3;
+        dx /= d; dy /= d;
+        const D = (P * q + PN * q * q) * 0.5;
+        X[j] += dx * D; Y[j] += dy * D;
+        ddx -= dx * D; ddy -= dy * D;
+        if (own) {
+          if (!OWN[j]) { if (q > 0.45 && nC < MAXC) { OWN[j] = 1; nC++; } }
+          else { // slow colour bleed between neighbours = swirls
+            CR[i] += (CR[j] - CR[i]) * 0.00025;
+            CG[i] += (CG[j] - CG[i]) * 0.00025;
+            CB[i] += (CB[j] - CB[i]) * 0.00025;
+          }
+        }
+      }
+      X[i] += ddx; Y[i] += ddy;
+    }
+  }
+
+  // ---- rendering ----
+  const cv = document.getElementById("tank"), ctx = cv.getContext("2d");
+  const img = ctx.createImageData(W, H), px = img.data;
+  const den = new Float32Array(W * H), ar = new Float32Array(W * H), ag = new Float32Array(W * H), ab = new Float32Array(W * H);
+  const bg = new Uint8ClampedArray(W * H * 3);
+  (function paintBg() {
+    const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 3, t = bayer[(y & 3) * 4 + (x & 3)] / 16;
+      let r, g, b;
+      if (y > FLOOR) { const s = ((x + y) & 1) ? 1 : 0; r = 30 + s * 4; g = 33 + s * 4; b = 34 + s * 4; if (y === FLOOR + 1) { r = 52; g = 58; b = 58; } }
+      else { const v = Math.floor(y / FLOOR * 4 + t); r = 10 + v * 2; g = 13 + v * 2; b = 16 + v * 2; }
+      bg[o] = r; bg[o + 1] = g; bg[o + 2] = b;
+    }
+  })();
+
+  const q = v => Math.max(0, Math.min(255, Math.round(v / 10) * 10));
+  function render() {
+    den.fill(0); ar.fill(0); ag.fill(0); ab.fill(0);
+    for (let i = 0; i < n; i++) {
+      const x = X[i], y = Y[i], bx = x | 0, by = y | 0;
+      for (let oy = -1; oy <= 1; oy++) {
+        const py = by + oy; if (py < 0 || py >= H) continue;
+        for (let ox = -1; ox <= 1; ox++) {
+          const pxx = bx + ox; if (pxx < 0 || pxx >= W) continue;
+          const dx = pxx + 0.5 - x, dy = py + 0.5 - y, d2 = dx * dx + dy * dy;
+          if (d2 < 2.1) {
+            const w = 1 - d2 / 2.1, o = py * W + pxx;
+            den[o] += w; ar[o] += w * CR[i]; ag[o] += w * CG[i]; ab[o] += w * CB[i];
+          }
+        }
+      }
+    }
+    const T = 0.55;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const o = y * W + x, p = o * 4;
+      if (den[o] > T) {
+        const up = y > 0 && den[o - W] > T, dn = y < H - 1 && den[o + W] > T;
+        const lf = x > 0 && den[o - 1] > T, rt = x < W - 1 && den[o + 1] > T;
+        let s = 0.92 + Math.min(den[o], 3) * 0.04;
+        if (!up) s = 1.3; else if (!dn || !lf || !rt) s = 0.62;
+        else if (y > 1 && den[o - 2 * W] <= T) s = 1.12;
+        const inv = s / den[o];
+        px[p] = q(ar[o] * inv); px[p + 1] = q(ag[o] * inv); px[p + 2] = q(ab[o] * inv);
+      } else {
+        const b = o * 3; px[p] = bg[b]; px[p + 1] = bg[b + 1]; px[p + 2] = bg[b + 2];
+      }
+      px[p + 3] = 255;
+    }
+    drawEyes();
+    ctx.putImageData(img, 0, 0);
+  }
+
+  function setPx(x, y, r, g, b) {
+    x |= 0; y |= 0; if (x < 0 || y < 0 || x >= W || y >= H) return;
+    const p = (y * W + x) * 4; px[p] = r; px[p + 1] = g; px[p + 2] = b;
+  }
+  function drawEyes() {
+    if (nC < 30) return;
+    const rad = core.rad;
+    const ey = my - rad * 0.38, gap = Math.max(3, rad * 0.28);
+    const cx = mx + core.face * rad * 0.22;
+    const look = core.face;
+    for (const s of [-1, 1]) {
+      const ex = Math.round(cx + s * gap / 2), yy = Math.round(ey);
+      if (core.blink > 0 || core.flinch > 0) {
+        setPx(ex - 1, yy, 20, 22, 22); setPx(ex, yy, 20, 22, 22); setPx(ex + 1, yy, 20, 22, 22);
+      } else {
+        for (let a = -1; a <= 1; a++) for (let b = -1; b <= 0; b++) setPx(ex + a, yy + b, 232, 230, 220);
+        setPx(ex + look, yy, 18, 20, 20);
+      }
+    }
+  }
+
+  // ---- UI ----
+  let pick = 1;
+  const sws = document.getElementById("swatches");
+  MATS.forEach((m, i) => {
+    if (i === 0) return;
+    const b = document.createElement("button");
+    b.className = "sw"; b.type = "button"; b.id = "mat-" + m.name.toLowerCase();
+    b.innerHTML = `<i style="background:rgb(${m.c})"></i>${m.name}`;
+    b.setAttribute("aria-pressed", i === pick);
+    b.onclick = () => { pick = i; [...sws.children].forEach(c => c.setAttribute("aria-pressed", c === b)); };
+    sws.appendChild(b);
+  });
+  document.getElementById("reset").onclick = reset;
+
+  cv.addEventListener("pointerdown", e => {
+    const r = cv.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width * W, y = (e.clientY - r.top) / r.height * H;
+    const rad = core.rad || 10;
+    if (nC > 30 && Math.hypot(x - mx, y - my) < rad * 1.05) {
+      // poke: splash outward, some liquid breaks loose
+      for (let i = 0; i < n; i++) if (OWN[i]) {
+        const dx = X[i] - x, dy = Y[i] - y, d = Math.hypot(dx, dy);
+        if (d < 11) {
+          const f = (1 - d / 11) * 2.6 + 0.4;
+          X[i] += dx / (d + 0.01) * f * 0.5; Y[i] += dy / (d + 0.01) * f * 0.5 - f * 0.4;
+          if (d < 6 && Math.random() < 0.45) OWN[i] = 0;
+        }
+      }
+      core.flinch = 30;
+      if (!core.hop) core.hop = 1;
+    } else {
+      blob(x, y, 3.2, 32, pick, 0, 0.2);
+    }
+  });
+
+  const bar = document.getElementById("bar"), stats = document.getElementById("stats");
+  function hud() {
+    const cnt = new Array(MATS.length).fill(0); let r = 0, g = 0, b = 0;
+    for (let i = 0; i < n; i++) if (OWN[i]) { cnt[MAT[i]]++; r += CR[i]; g += CG[i]; b += CB[i]; }
+    const tot = Math.max(1, nC);
+    bar.innerHTML = cnt.map((c, i) => c ? `<span title="${MATS[i].name}" style="width:${c / tot * 100}%;background:rgb(${MATS[i].c})"></span>` : "").join("");
+    const hex = "#" + [r, g, b].map(v => Math.round(v / tot).toString(16).padStart(2, "0")).join("");
+    const parts = cnt.map((c, i) => c ? `${MATS[i].name} ${Math.round(c / tot * 100)}%` : "").filter(Boolean).join(" · ");
+    stats.innerHTML = `<b>${nC}</b> drops · tint <b>${hex}</b><br>${parts}`;
+  }
+
+  reset();
+  let frame = 0;
+  function loop() {
+    step(); step();
+    if (core.blink > 0) core.blink--; else if (Math.random() < 0.006) core.blink = 7;
+    if (core.flinch > 0) core.flinch--;
+    render();
+    if (frame++ % 15 === 0) hud();
+    requestAnimationFrame(loop);
+  }
+  for (let i = 0; i < 120; i++) step(); // settle before the first frame
+  loop();
+})();
+</script>
