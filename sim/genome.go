@@ -21,38 +21,38 @@ var layoutNames = []string{"single", "chain", "stack", "clump"}
 // feel of the liquid; mind genes shape how the brain learns.
 type Genome struct {
 	// body
-	Mass     int     // starting particle count
-	Layout   int     // lobe arrangement
-	Lobes    int     // 1..4
-	LobeGap  float32 // 0.5 merged .. 1.1 distinct segments
-	LobeTaper float32 // size falloff along the lobes, 0.6..1
-	Aspect   float32 // 0.6 tall .. 1.6 wide
-	Soft     float32 // 0 floppy puddle .. 1 firm
-	Taut     float32 // 0 loose skin .. 1 drum-tight
-	Pack     float32 // body radius scale, small = pressurised balloon
-	Jiggle   float32 // 0 gloopy .. 1 jelly
-	Breath   float32 // breathing amplitude
-	Nucleus  float32 // fraction of particles forming a visible core
+	Mass          int     // starting particle count
+	Layout        int     // lobe arrangement
+	Lobes         int     // 1..4
+	LobeGap       float32 // 0.5 merged .. 1.1 distinct segments
+	LobeTaper     float32 // size falloff along the lobes, 0.6..1
+	Aspect        float32 // 0.6 tall .. 1.6 wide
+	Soft          float32 // 0 floppy puddle .. 1 firm
+	Taut          float32 // 0 loose skin .. 1 drum-tight
+	Pack          float32 // body radius scale, small = pressurised balloon
+	Jiggle        float32 // 0 gloopy .. 1 jelly
+	Breath        float32 // breathing amplitude
+	Nucleus       float32 // fraction of particles forming a visible core
 	Hue, Sat, Val float32
-	Speckle  float32 // per-particle colour noise
-	Spots    float32 // fraction of particles in the second colour
-	Hue2     float32
-	Rim      float32 // outline darkness 0..1
-	Alpha    float32 // opacity 0.55..1
-	Eyes     int     // 0..3
-	EyeSize  int     // 1..3 px
-	EyeGap   float32
-	EyeHigh  float32
-	Pupil    int // 0 dot, 1 none, 2 tall slit
-	Hoppy    float32
-	Speed    float32
+	Speckle       float32 // per-particle colour noise
+	Spots         float32 // fraction of particles in the second colour
+	Hue2          float32
+	Rim           float32 // outline darkness 0..1
+	Alpha         float32 // opacity 0.55..1
+	Eyes          int     // 0..3
+	EyeSize       int     // 1..3 px
+	EyeGap        float32
+	EyeHigh       float32
+	Pupil         int // 0 dot, 1 none, 2 tall slit
+	Hoppy         float32
+	Speed         float32
 
 	// mind
-	LR    float32    // learning rate
-	Temp  float32    // decision randomness (curiosity)
-	Taste [NCol]float32 // how filling each colour is to this one
-	Metab float32
-	Instinct int64   // seed for innate brain wiring
+	LR       float32       // learning rate
+	Temp     float32       // decision randomness (curiosity)
+	Taste    [NCol]float32 // how filling each colour is to this one
+	Metab    float32
+	Instinct int64 // seed for innate brain wiring
 }
 
 func lerp(a, b, t float32) float32 { return a + (b-a)*t }

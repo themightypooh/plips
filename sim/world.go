@@ -1,4 +1,4 @@
-// Package sim is the liquid-pixel world: particles, the room, and the critters
+// Package sim is the liquid-pixel world: particles, surfaces, and the plips
 // living in it. It has no graphics dependencies so it can run headless.
 package sim
 
@@ -8,13 +8,6 @@ import (
 )
 
 const (
-	W     = 320
-	H     = 180
-	Floor = 163 // y of the floor surface
-
-	WallL = 3
-	WallR = W - 3
-
 	MaxP = 6000
 
 	// Double-density relaxation (Clavet et al. 2005), tuned in pixel units.
@@ -27,45 +20,46 @@ const (
 
 	Dens = 0.62 // particles per px² at rest, used to size bodies
 
-	EvapAge = 120 * 90 // loose liquid dries up after ~90 s
+	EvapAge = 120 * 120 // loose liquid dries up after ~2 min
+	MinMass = 40
 )
 
-// Material is a kind of liquid you can drop. Index 0 is body plasm and is
-// never dropped by the player.
-type Material struct {
-	Name   string
-	C      [3]float32
-	Hunger float32 // change to hunger per particle eaten
-	Pain   float32 // change to pain per particle eaten
+// Colour is a food colour you can drop. Particle material 0 is body plasm;
+// materials 1..NCol are these colours.
+type Colour struct {
+	Name string
+	C    [3]float32
 }
 
-var Mats = []Material{
-	{"Plasm", [3]float32{140, 150, 145}, 0, 0},
-	{"Ink", [3]float32{52, 82, 140}, -0.010, 0},
-	{"Rust", [3]float32{158, 74, 48}, -0.008, 0.012},
-	{"Pollen", [3]float32{205, 162, 62}, -0.020, 0},
-	{"Moss", [3]float32{84, 122, 62}, -0.015, 0},
-	{"Milk", [3]float32{226, 221, 208}, -0.030, 0},
-	{"Tar", [3]float32{38, 34, 32}, -0.004, 0.045},
+const NCol = 8
+
+var Colours = [NCol]Colour{
+	{"Red", [3]float32{186, 62, 54}},
+	{"Orange", [3]float32{212, 124, 54}},
+	{"Yellow", [3]float32{220, 188, 72}},
+	{"Green", [3]float32{82, 148, 82}},
+	{"Blue", [3]float32{62, 102, 186}},
+	{"Violet", [3]float32{128, 82, 168}},
+	{"White", [3]float32{228, 226, 218}},
+	{"Black", [3]float32{34, 33, 37}},
 }
 
 // Platform is a one-way surface: liquid landing from above rests on it.
 type Platform struct{ X0, X1, Y float32 }
 
-var Platforms = []Platform{
-	{20, 84, 104},   // wall shelf
-	{228, 292, 128}, // table top
-}
-
 type World struct {
+	W, H, Floor float32
+	Platforms   []Platform
+
 	X, Y, PX, PY, VX, VY []float32
 	CR, CG, CB           []float32
-	Own                  []uint8 // 0 = loose, otherwise critter ID
-	Mat                  []uint8
+	Own                  []uint8 // 0 = loose, otherwise plip ID
+	Mat                  []uint8 // 0 = body plasm, 1..NCol = food colour
+	Lobe, Role           []uint8 // which body lobe; role 1 = nucleus
 	Age                  []int32
 	N                    int
 
-	Critters []*Critter
+	Plips []*Plip
 
 	Hand struct {
 		X, Y    float32
@@ -81,73 +75,121 @@ type World struct {
 	nq         [256]float32
 }
 
-func NewWorld(seed int64) *World {
-	w := &World{Rng: rand.New(rand.NewSource(seed))}
+func NewWorld(w, h, floor float32, seed int64) *World {
+	wd := &World{W: w, H: h, Floor: floor, Rng: rand.New(rand.NewSource(seed))}
 	alloc := func() []float32 { return make([]float32, MaxP) }
-	w.X, w.Y, w.PX, w.PY, w.VX, w.VY = alloc(), alloc(), alloc(), alloc(), alloc(), alloc()
-	w.CR, w.CG, w.CB = alloc(), alloc(), alloc()
-	w.Own = make([]uint8, MaxP)
-	w.Mat = make([]uint8, MaxP)
-	w.Age = make([]int32, MaxP)
-	w.gw, w.gh = int(W/R)+2, int(H/R)+2
-	w.head = make([]int32, w.gw*w.gh)
-	w.next = make([]int32, MaxP)
-	w.Reset()
-	return w
+	wd.X, wd.Y, wd.PX, wd.PY, wd.VX, wd.VY = alloc(), alloc(), alloc(), alloc(), alloc(), alloc()
+	wd.CR, wd.CG, wd.CB = alloc(), alloc(), alloc()
+	wd.Own = make([]uint8, MaxP)
+	wd.Mat = make([]uint8, MaxP)
+	wd.Lobe = make([]uint8, MaxP)
+	wd.Role = make([]uint8, MaxP)
+	wd.Age = make([]int32, MaxP)
+	wd.gw, wd.gh = int(w/R)+2, int(h/R)+2
+	wd.head = make([]int32, wd.gw*wd.gh)
+	wd.next = make([]int32, MaxP)
+	return wd
 }
 
-// Reset clears the room and hatches a fresh pair.
-func (w *World) Reset() {
+// Clear removes every particle and plip.
+func (w *World) Clear() {
 	w.N = 0
-	w.Critters = nil
-	a := NewCritter(1, RandomGenome(w.Rng), w.Rng)
-	b := NewCritter(2, RandomGenome(w.Rng), w.Rng)
-	w.Critters = append(w.Critters, a, b)
-	a.CoreX, b.CoreX = 110, 200
-	for _, c := range w.Critters {
-		c.TX = c.CoreX
-		r := float32(math.Sqrt(float64(c.G.StartMass) / (math.Pi * Dens)))
-		w.blob(c.CoreX, Floor-r, r, c.G.StartMass, 0, uint8(c.ID), c.G.Base)
+	w.Plips = nil
+}
+
+// AddPlip hatches a plip at x. colours, if given, are its saved body colours
+// (one per particle); otherwise the genome decides.
+func (w *World) AddPlip(p *Plip, x float32, colours [][3]uint8) {
+	p.ID = len(w.Plips) + 1
+	w.Plips = append(w.Plips, p)
+	p.CoreX, p.TX = x, x
+	mass := p.G.Mass
+	if len(colours) > 0 {
+		mass = len(colours)
 	}
-	// a little something to find
-	w.Blob(160, Floor-3, 3, 14, 5)
-	w.Blob(60, 40, 2.5, 12, 3)
-	for i := 0; i < 200; i++ {
-		w.Step()
+	p.Mass = mass
+	p.layout(w)
+	base, spot := p.G.BaseColor(), p.G.SpotColor()
+	weights := p.lobeWeights()
+	for k := 0; k < mass; k++ {
+		l := pickWeighted(w.Rng, weights)
+		role := uint8(0)
+		if w.Rng.Float32() < p.G.Nucleus {
+			role, l = 1, 0
+		}
+		col := base
+		jit := (w.Rng.Float32() - 0.5) * p.G.Speckle
+		if role == 1 {
+			col = [3]float32{base[0] * 0.55, base[1] * 0.55, base[2] * 0.6}
+		} else if w.Rng.Float32() < p.G.Spots {
+			col = spot
+		}
+		col = [3]float32{col[0] + jit, col[1] + jit, col[2] + jit}
+		if k < len(colours) {
+			c := colours[k]
+			col = [3]float32{float32(c[0]), float32(c[1]), float32(c[2])}
+		}
+		a := w.Rng.Float64() * 2 * math.Pi
+		d := float32(math.Sqrt(w.Rng.Float64())) * p.LR[l] * 0.8
+		w.addRaw(p.CoreX+p.LX[l]+float32(math.Cos(a))*d, p.CoreY+p.LY[l]+float32(math.Sin(a))*d,
+			0, uint8(p.ID), l, role, col, 0, 0)
 	}
 }
 
-func (w *World) add(x, y float32, mat, own uint8, col [3]float32, vx, vy float32) {
+func pickWeighted(r *rand.Rand, w []float32) uint8 {
+	var t float32
+	for _, v := range w {
+		t += v
+	}
+	x := r.Float32() * t
+	for i, v := range w {
+		if x < v {
+			return uint8(i)
+		}
+		x -= v
+	}
+	return uint8(len(w) - 1)
+}
+
+func (w *World) addRaw(x, y float32, mat, own, lobe, role uint8, col [3]float32, vx, vy float32) {
 	if w.N >= MaxP {
 		return
 	}
 	i := w.N
-	j := (w.Rng.Float32() - 0.5) * 16
-	w.X[i], w.Y[i], w.VX[i], w.VY[i] = x, y, vx, vy
-	w.CR[i], w.CG[i], w.CB[i] = col[0]+j, col[1]+j, col[2]+j
-	w.Own[i], w.Mat[i], w.Age[i] = own, mat, 0
+	w.X[i], w.Y[i], w.PX[i], w.PY[i], w.VX[i], w.VY[i] = x, y, x, y, vx, vy
+	w.CR[i], w.CG[i], w.CB[i] = col[0], col[1], col[2]
+	w.Own[i], w.Mat[i], w.Lobe[i], w.Role[i], w.Age[i] = own, mat, lobe, role, 0
 	w.N++
 }
 
-func (w *World) blob(cx, cy, r float32, count int, mat, own uint8, col [3]float32) {
+func (w *World) loose(x, y float32, col int, vx, vy float32) {
+	c := Colours[col].C
+	j := (w.Rng.Float32() - 0.5) * 14
+	w.addRaw(x, y, uint8(col+1), 0, 0, 0, [3]float32{c[0] + j, c[1] + j, c[2] + j}, vx, vy)
+}
+
+// Splash drops a blob of loose liquid of colour col (0..NCol-1).
+func (w *World) Splash(x, y float32, col, count int) {
 	for k := 0; k < count; k++ {
 		a := w.Rng.Float64() * 2 * math.Pi
-		d := float32(math.Sqrt(w.Rng.Float64())) * r
-		w.add(cx+float32(math.Cos(a))*d, cy+float32(math.Sin(a))*d, mat, own, col, 0, 0.2)
+		d := float32(math.Sqrt(w.Rng.Float64())) * 3.2
+		w.loose(x+float32(math.Cos(a))*d, y+float32(math.Sin(a))*d, col, 0, 0.2)
 	}
 }
 
-// Blob drops a splash of loose liquid.
-func (w *World) Blob(x, y, r float32, count int, mat uint8) {
-	w.blob(x, y, r, count, mat, 0, Mats[mat].C)
+// Drop adds a single droplet (a few particles so it reads as one drop).
+func (w *World) Drop(x, y float32, col int) {
+	for k := 0; k < 3; k++ {
+		w.loose(x+(w.Rng.Float32()-0.5)*0.8, y+(w.Rng.Float32()-0.5)*0.8, col, 0, 0.3)
+	}
 }
 
-// Drip adds one loose particle with a velocity (used for drops and streams).
-func (w *World) Drip(x, y float32, mat uint8, vx, vy float32) {
-	w.add(x, y, mat, 0, Mats[mat].C, vx, vy)
+// Stream adds one particle of a falling stream.
+func (w *World) Stream(x, y float32, col int) {
+	w.loose(x+(w.Rng.Float32()-0.5)*0.3, y, col, 0, 1.4)
 }
 
-// Full reports whether the room has run out of particle budget.
+// Full reports whether the particle budget is nearly used up.
 func (w *World) Full() bool { return w.N > MaxP-64 }
 
 func (w *World) remove(i int) {
@@ -155,56 +197,88 @@ func (w *World) remove(i int) {
 	w.X[i], w.Y[i], w.PX[i], w.PY[i] = w.X[last], w.Y[last], w.PX[last], w.PY[last]
 	w.VX[i], w.VY[i] = w.VX[last], w.VY[last]
 	w.CR[i], w.CG[i], w.CB[i] = w.CR[last], w.CG[last], w.CB[last]
-	w.Own[i], w.Mat[i], w.Age[i] = w.Own[last], w.Mat[last], w.Age[last]
+	w.Own[i], w.Mat[i], w.Lobe[i], w.Role[i], w.Age[i] = w.Own[last], w.Mat[last], w.Lobe[last], w.Role[last], w.Age[last]
 	w.N--
 }
 
-// CritterAt returns the critter whose body is under (x, y), if any.
-func (w *World) CritterAt(x, y float32) *Critter {
-	for _, c := range w.Critters {
-		if c.Mass > 20 && hypot(x-c.MX, y-c.MY) < c.Rad*1.15 {
-			return c
+// PlipAt returns the plip under (x, y), if any.
+func (w *World) PlipAt(x, y float32) *Plip {
+	for _, p := range w.Plips {
+		if p.Mass > 10 && hypot(x-p.MX, y-p.MY) < p.Rad*1.2+1 {
+			return p
 		}
 	}
 	return nil
 }
 
-func (w *World) Other(c *Critter) *Critter {
-	for _, o := range w.Critters {
-		if o != c {
+// Other returns the plip's companion, or nil if it's alone.
+func (w *World) Other(p *Plip) *Plip {
+	for _, o := range w.Plips {
+		if o != p {
 			return o
 		}
 	}
 	return nil
 }
 
+// BodyColours returns a plip's body colours, one per particle, for saving.
+func (w *World) BodyColours(p *Plip) [][3]uint8 {
+	var out [][3]uint8
+	for i := 0; i < w.N; i++ {
+		if w.Own[i] == uint8(p.ID) {
+			out = append(out, [3]uint8{u8(w.CR[i]), u8(w.CG[i]), u8(w.CB[i])})
+		}
+	}
+	return out
+}
+
+func u8(v float32) uint8 {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint8(v)
+}
+
 // Step advances the world by one physics tick (the game runs two per frame).
 func (w *World) Step() {
 	w.Tick++
 	w.census()
-	for _, c := range w.Critters {
-		c.Update(w)
+	for _, p := range w.Plips {
+		p.Update(w)
 	}
 	w.housekeeping()
 
 	for i := 0; i < w.N; i++ {
-		w.VY[i] += G
-		if o := w.Own[i]; o != 0 {
-			c := w.Critters[o-1]
-			dx, dy := c.CoreX-w.X[i], c.CoreY-w.Y[i]
-			d := float32(math.Sqrt(float64(dx*dx+dy*dy))) + 1e-4
-			w.VX[i] += dx * 0.0035
-			w.VY[i] += dy * 0.0035
-			if d > c.Rad {
-				f := (d - c.Rad) * 0.012 / d
+		damp := float32(0.996)
+		if o := w.Own[i]; o == 0 {
+			w.VY[i] += G
+			w.Age[i]++
+		} else {
+			w.VY[i] += G * 0.45 // bodies are partly self-supporting
+			p := w.Plips[o-1]
+			l := w.Lobe[i]
+			cx, cy, r := p.CoreX+p.LX[l], p.CoreY+p.LY[l], p.LR[l]*p.breathScale
+			kout := p.kOut
+			if w.Role[i] == 1 {
+				r *= 0.38
+				kout *= 2
+			}
+			dx, dy := cx-w.X[i], cy-w.Y[i]
+			w.VX[i] += dx * p.kIn
+			w.VY[i] += dy * p.kIn
+			ex, ey := dx/(r*p.ax), dy/(r*p.ay)
+			if e := float32(math.Sqrt(float64(ex*ex + ey*ey))); e > 1 {
+				f := kout * (e - 1) / e
 				w.VX[i] += dx * f
 				w.VY[i] += dy * f
 			}
-		} else {
-			w.Age[i]++
+			damp = p.damp
 		}
-		w.VX[i] *= 0.996
-		w.VY[i] *= 0.996
+		w.VX[i] *= damp
+		w.VY[i] *= damp
 		if sp := w.VX[i]*w.VX[i] + w.VY[i]*w.VY[i]; sp > 9 {
 			s := 3 / float32(math.Sqrt(float64(sp)))
 			w.VX[i] *= s
@@ -225,20 +299,23 @@ func (w *World) Step() {
 }
 
 func (w *World) collide(i int) {
-	if w.X[i] < WallL {
-		w.X[i] = WallL
-	} else if w.X[i] > WallR {
-		w.X[i] = WallR
+	if w.X[i] < 2 {
+		w.X[i] = 2
+	} else if w.X[i] > w.W-2 {
+		w.X[i] = w.W - 2
 	}
 	if w.Y[i] < 1 {
 		w.Y[i] = 1
 	}
-	if w.Y[i] >= Floor {
-		w.Y[i] = Floor
+	if w.Y[i] >= w.Floor {
+		w.Y[i] = w.Floor
 		w.X[i] = w.X[i]*0.7 + w.PX[i]*0.3
 		return
 	}
-	for _, p := range Platforms {
+	if w.Own[i] != 0 {
+		return // plips walk under furniture; only loose liquid lands on it
+	}
+	for _, p := range w.Platforms {
 		if w.PY[i] <= p.Y && w.Y[i] > p.Y && w.X[i] >= p.X0 && w.X[i] <= p.X1 {
 			w.Y[i] = p.Y
 			w.X[i] = w.X[i]*0.7 + w.PX[i]*0.3
@@ -246,45 +323,54 @@ func (w *World) collide(i int) {
 	}
 }
 
-// census recounts each critter's mass and centre.
+// census recounts each plip's mass, centre and head position.
 func (w *World) census() {
 	type acc struct {
-		sx, sy float32
-		n      int
+		sx, sy, hx, hy float32
+		n, hn          int
 	}
-	var a [8]acc
+	var a [16]acc
 	for i := 0; i < w.N; i++ {
 		if o := w.Own[i]; o != 0 {
-			a[o].sx += w.X[i]
-			a[o].sy += w.Y[i]
-			a[o].n++
+			s := &a[o]
+			s.sx += w.X[i]
+			s.sy += w.Y[i]
+			s.n++
+			if w.Lobe[i] == 0 && w.Role[i] == 0 {
+				s.hx += w.X[i]
+				s.hy += w.Y[i]
+				s.hn++
+			}
 		}
 	}
-	for _, c := range w.Critters {
-		s := a[c.ID]
-		c.Mass = s.n
+	for _, p := range w.Plips {
+		s := a[p.ID]
+		p.Mass = s.n
 		if s.n > 0 {
-			c.MX, c.MY = s.sx/float32(s.n), s.sy/float32(s.n)
+			p.MX, p.MY = s.sx/float32(s.n), s.sy/float32(s.n)
 		}
-		c.Rad = float32(math.Sqrt(float64(c.Mass) / (math.Pi * Dens)))
+		if s.hn > 0 {
+			p.HeadX, p.HeadY = s.hx/float32(s.hn), s.hy/float32(s.hn)
+		}
+		p.layout(w)
 	}
 }
 
-// housekeeping: starving critters waste away, old puddles dry up.
+// housekeeping: starving plips waste away, old puddles dry up.
 func (w *World) housekeeping() {
-	for _, c := range w.Critters {
-		if c.Drives[Hunger] > 0.85 && c.Mass > 50 && w.Tick%240 == 0 {
+	for _, p := range w.Plips {
+		if p.Drives[Hunger] > 0.9 && p.Mass > MinMass && w.Tick%360 == 0 {
 			for i := 0; i < w.N; i++ {
-				if w.Own[i] == uint8(c.ID) {
+				if w.Own[i] == uint8(p.ID) && w.Role[i] == 0 {
 					w.remove(i)
 					break
 				}
 			}
 		}
 	}
-	if w.N > 0 {
+	for k := 0; k < 2 && w.N > 0; k++ {
 		i := w.Rng.Intn(w.N)
-		if w.Own[i] == 0 && (w.Age[i] > EvapAge || (w.Mat[i] == 0 && w.Age[i] > EvapAge/4)) {
+		if w.Own[i] == 0 && w.Age[i] > EvapAge {
 			w.remove(i)
 		}
 	}
@@ -295,7 +381,14 @@ func (w *World) grid() {
 		w.head[i] = -1
 	}
 	for i := 0; i < w.N; i++ {
-		c := int(w.Y[i]/R)*w.gw + int(w.X[i]/R)
+		gx, gy := int(w.X[i]/R), int(w.Y[i]/R)
+		if gx >= w.gw {
+			gx = w.gw - 1
+		}
+		if gy >= w.gh {
+			gy = w.gh - 1
+		}
+		c := gy*w.gw + gx
 		w.next[i] = w.head[c]
 		w.head[c] = int32(i)
 	}
@@ -334,9 +427,9 @@ func (w *World) relax() {
 		P, PN := K*(rho-RHO0), KN*rhoN
 		var ddx, ddy float32
 		own := w.Own[i]
-		var c *Critter
+		var p *Plip
 		if own != 0 {
-			c = w.Critters[own-1]
+			p = w.Plips[own-1]
 		}
 		for k := 0; k < m; k++ {
 			j, q := w.nb[k], w.nq[k]
@@ -352,31 +445,47 @@ func (w *World) relax() {
 			w.Y[j] += dy * D
 			ddx -= dx * D
 			ddy -= dy * D
-			if c == nil {
+			if p == nil {
+				if w.Own[j] == 0 && w.Mat[j] == w.Mat[i] && q < 0.7 {
+					// loose liquid of one colour clings to itself, so puddles bead
+					c := 0.012 * q
+					w.X[j] -= dx * c
+					w.Y[j] -= dy * c
+					ddx += dx * c
+					ddy += dy * c
+				}
 				continue
 			}
 			oj := w.Own[j]
 			switch {
 			case oj == own:
-				// slow colour bleed between neighbours
-				w.CR[i] += (w.CR[j] - w.CR[i]) * 0.00025
-				w.CG[i] += (w.CG[j] - w.CG[i]) * 0.00025
-				w.CB[i] += (w.CB[j] - w.CB[i]) * 0.00025
-			case oj == 0:
-				if q > 0.45 && c.EatMat >= 0 && int(w.Mat[j]) == c.EatMat && c.Mass < c.MaxMass() {
-					w.Own[j] = own
-					c.Mass++
-					c.Ate(w.Mat[j])
+				if w.Role[i] == w.Role[j] { // slow colour bleed = swirls
+					w.CR[i] += (w.CR[j] - w.CR[i]) * 0.00025
+					w.CG[i] += (w.CG[j] - w.CG[i]) * 0.00025
+					w.CB[i] += (w.CB[j] - w.CB[i]) * 0.00025
 				}
-			case oj == c.StealFrom && q > 0.5 && c.stealCD <= 0:
-				o := w.Critters[oj-1]
-				if o.Mass > 50 {
+			case oj == 0:
+				if w.Mat[j] == 0 && q > 0.5 && w.Age[j] > 60 {
+					// knocked-loose body goo gets slurped back up on contact
 					w.Own[j] = own
-					c.Mass++
+					w.Lobe[j] = w.Lobe[i]
+					p.Mass++
+				} else if q > 0.45 && p.EatCol >= 0 && int(w.Mat[j]) == p.EatCol+1 && p.Mass < p.MaxMass() {
+					w.Own[j] = own
+					w.Lobe[j] = w.Lobe[i]
+					p.Mass++
+					p.Ate(int(w.Mat[j]) - 1)
+				}
+			case oj == p.StealFrom && q > 0.5 && p.stealCD <= 0:
+				o := w.Plips[oj-1]
+				if o.Mass > MinMass && w.Role[j] == 0 {
+					w.Own[j] = own
+					w.Lobe[j] = w.Lobe[i]
+					p.Mass++
 					o.Mass--
-					c.stealCD = 8
-					c.Ate(w.Mat[j])
-					o.Hurt(0.025)
+					p.stealCD = 10
+					p.Drives[Hunger] = clamp01(p.Drives[Hunger] - 0.012)
+					o.Hurt(0.03)
 				}
 			}
 		}

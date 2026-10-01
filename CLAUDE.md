@@ -71,17 +71,34 @@ things, and appearance changing based on what happens to them (like Wobbledogs).
 - A diary of what happened while the user was away.
 - Breeding (`sim.Cross` already exists).
 
-## State of the code
+## State of the code (v0.1)
 
-- `prototype/slosh-tank.html`: the first browser toy (one blob, drop colours, poke). It's a
-  reference for the physics and rendering, which work and look right there.
-- `sim/world.go`: particle world, room collision, absorption and stealing. **Work in progress:**
-  it still has the old named liquids (`Mats`), fixed room size constants and the old genome field
-  names (`StartMass`, `Base`). Make it match the plan: colours palette, a world size set per mode,
-  and per-particle lobe/role.
-- `sim/genome.go`: body and mind genes, `RandomGenome`, `Mutate`, `Cross`, `Describe`. Matches
-  the plan.
-- Not written yet: `sim/critter.go` (body control with lobes/aspect/softness, eyes, behaviour),
-  `sim/brain.go`, `sim/render.go` (RGBA buffer with transparent mode), the room background, the
-  headless `cmd/shot` PNG tool, and the Ebitengine `main` package with the modes.
-- It doesn't compile yet. Next step: get the gallery on screen and send the user a Windows exe.
+Layout:
+- `main.go`: the Ebitengine app. Handles modes (F1/F2/F3, or Ctrl+Alt+1/2/3 from anywhere), window
+  setup per mode, desktop click-through, autosave and Ctrl+Alt+Q to quit.
+- `gallery.go`: a 4x3 grid of brainless baby plips. Click = refill with mutants of that one,
+  right-click = star (saved to `favourites.json`), Space = all new.
+- `pets.go`: the live pair with brains, used by both the room and desktop modes. Handles mouse
+  controls, the info panel (Tab or Ctrl+Alt+H) and `NewPair` (hatches from the last two starred).
+- `store.go`: JSON files in `%APPDATA%\Plips\` (`settings.json`, `pets.json`, `favourites.json`).
+- `platform_windows.go`: win32 calls (global cursor, global keys, taskbar work area,
+  below-normal priority). `platform_other.go` holds stubs.
+- `sim/`: world physics (`world.go`), genes (`genome.go`), body and behaviour (`plip.go`),
+  brain (`brain.go`), pixel renderer (`render.go`), room art and platforms (`room.go`).
+- `cmd/shot`: a headless run that writes `gallery.png`, `room-mid.png` and `room.png` and prints
+  brain stats: `go run ./cmd/shot -out shots` (pass a negative `-seed` to get a gallery of one
+  family). Use it to check looks and behaviour from Linux.
+- `prototype/slosh-tank.html`: the original browser toy.
+
+Build: `GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o dist/plips.exe .`
+The `main` package only builds for Windows from Linux. Ebitengine on Linux needs cgo and X11
+headers, which this container doesn't have. `go vet` works with `GOOS=windows`.
+
+Known gaps and next ideas:
+- None of the window modes have been run on real Windows yet; the desktop overlay especially
+  needs checking (transparency, click-through toggling, taskbar floor, DPI scaling).
+- The gallery reads mostly as blobs. Lobed bodies (chain/stack/clump) only show as faint
+  creases, so shapes need to be more distinct.
+- Spilled liquid spreads into thin films on the floor.
+- No offline time: the plips only live while the app is running.
+- The info panel uses Ebitengine's debug font. Swap in a proper pixel font.
