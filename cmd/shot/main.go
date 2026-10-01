@@ -24,6 +24,7 @@ func main() {
 	os.MkdirAll(*out, 0o755)
 	gallery(*out, *seed)
 	room(*out, *seed, *secs)
+	legs(*out, *seed)
 }
 
 const cellW, cellH, cellFloor, cols, rows = 108, 80, 70, 4, 3
@@ -127,4 +128,48 @@ func save(path string, src *image.RGBA, scale int) {
 	}
 	defer f.Close()
 	png.Encode(f, dst)
+}
+
+// legs renders one legged plip as its legs grow in and it learns to walk:
+// a strip of frames, top row untrained, bottom row after some practice.
+func legs(out string, seed int64) {
+	r := rand.New(rand.NewSource(seed + 7))
+	g := sim.RandomGenome(r)
+	g.Limbs = []sim.Limb{{Kind: sim.LimbLeg, Len: 7, Stiff: 0.6, Tip: true, Mirror: true}}
+	g.Hue, g.Sat, g.Val = 0.55, 0.35, 0.85 // light blue
+	const fw, fh, fl, nf = 120, 56, 48, 6
+	img := image.NewRGBA(image.Rect(0, 0, fw*nf, fh*2))
+	bg := sim.CellBackground(fw, fh, fl)
+	buf := make([]byte, fw*fh*4)
+	rd := sim.NewRenderer(fw, fh)
+	w := sim.NewWorld(fw, fh, fl, seed)
+	p := sim.NewPlip(g, "", false)
+	w.AddPlip(p, fw/2, nil)
+	shot := func(row, col int) {
+		rd.Render(w, buf, bg)
+		for y := 0; y < fh; y++ {
+			copy(img.Pix[(row*fh+y)*img.Stride+col*fw*4:], buf[y*fw*4:(y+1)*fw*4])
+		}
+	}
+	tgt := float32(14)
+	run := func(n int) {
+		for i := 0; i < n; i++ {
+			if d := p.CoreX - tgt; d*d < 16 {
+				tgt = fw - tgt
+			}
+			p.TX = tgt
+			w.Step()
+		}
+	}
+	for f := 0; f < nf; f++ {
+		run(9)
+		shot(0, f)
+	}
+	run(120 * 60 * 5)
+	for f := 0; f < nf; f++ {
+		run(9)
+		shot(1, f)
+	}
+	fmt.Printf("legs: %s, skill %.3f px/tick\n", p.WalkWords(), p.Motor.Skill)
+	save(filepath.Join(out, "legs.png"), img, 4)
 }

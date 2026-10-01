@@ -54,12 +54,25 @@ type Plip struct {
 	gScale  float32
 	lumpPh  float64
 	limbPh  float32
+
+	Motor    *Motor // leg controller; nil if it has no legs
+	nLegs    int
+	legLift  float32 // how far the legs are holding the body up
+	walkPh   float32
+	growT    float32
+	lastFace float32
 }
 
 // limbInst is one physical limb (a mirrored gene makes two).
 type limbInst struct {
 	Limb
-	side float32 // -1/+1 for a mirrored pair, 0 otherwise
+	side  float32 // -1/+1 for a mirrored pair, 0 otherwise
+	grown int     // segments grown in so far
+
+	leg                 int     // index among the legs, -1 if not a leg
+	a1, a2              float32 // hip angle (0 down, + forward) and knee bend
+	reach, fx, pfx      float32 // foot height below the hip, foot x ahead of the hip
+	contact, wasContact bool
 }
 
 func (l limbInst) segs() int {
@@ -76,11 +89,25 @@ func NewPlip(g Genome, name string, withBrain bool) *Plip {
 		if l.Len < 1 {
 			continue
 		}
+		sides := []float32{0}
 		if l.Mirror {
-			p.limbs = append(p.limbs, limbInst{l, -1}, limbInst{l, 1})
-		} else {
-			p.limbs = append(p.limbs, limbInst{l, 0})
+			sides = []float32{-1, 1}
 		}
+		for _, sd := range sides {
+			li := limbInst{Limb: l, side: sd, leg: -1}
+			if l.Kind == LimbLeg {
+				if p.nLegs >= MaxLegs {
+					continue
+				}
+				li.leg = p.nLegs
+				p.nLegs++
+			}
+			li.grown = li.segs()
+			p.limbs = append(p.limbs, li)
+		}
+	}
+	if p.nLegs > 0 {
+		p.Motor = NewMotor(g.Instinct)
 	}
 	for _, l := range p.limbs {
 		idx := make([]int32, l.segs())
@@ -194,14 +221,19 @@ func (p *Plip) layout(w *World) {
 			}
 		}
 	}
-	// stand the lowest lobe on the floor
+	// stand the lowest lobe on the floor (or on its legs)
+	low := p.lowLobe()
+	p.CoreY = w.Floor - p.LY[low] - p.LR[low]*p.ay*0.85*p.breathScale - p.lift - p.legLift
+}
+
+func (p *Plip) lowLobe() int {
 	low := 0
-	for i := 1; i < n; i++ {
+	for i := 1; i < p.lobes(); i++ {
 		if p.LY[i]+p.LR[i]*p.ay > p.LY[low]+p.LR[low]*p.ay {
 			low = i
 		}
 	}
-	p.CoreY = w.Floor - p.LY[low] - p.LR[low]*p.ay*0.85*p.breathScale - p.lift
+	return low
 }
 
 // Update runs once per tick: body animation, then the mind (or idling).
@@ -232,7 +264,9 @@ func (p *Plip) Update(w *World) {
 		p.idle(w)
 	}
 
-	// walk toward TX
+	p.grow(w)
+
+	// head for TX: ooze along the floor, plus whatever the legs manage
 	lo, hi := p.Rad+3, w.W-p.Rad-3
 	if p.TX < lo {
 		p.TX = lo
@@ -244,9 +278,20 @@ func (p *Plip) Update(w *World) {
 	if math.Abs(float64(dx)) > 0.6 {
 		p.Face = sign(dx)
 	}
+	want := math.Abs(float64(dx)) > 1.5
 	step := clamp(dx*0.03, -speed, speed)
-	p.CoreX += step
-	p.Moving = math.Abs(float64(dx)) > 1.5
+	if p.nLegs > 0 {
+		step *= 1 - 0.6*p.legGrowth() // legs get in the way of oozing
+		if p.legLift > 1 {
+			step *= 0.35 // and standing up on them, it can barely ooze at all
+		}
+	}
+	x0 := p.CoreX
+	p.CoreX = clamp(p.CoreX+step+p.walk(w, want && p.Hop == 0), lo, hi)
+	if p.Motor != nil && want && p.Hop == 0 {
+		p.Motor.learn(w.Rng, (p.CoreX-x0)*sign(dx))
+	}
+	p.Moving = want
 	if p.Moving {
 		p.wigglePh += 0.12 * p.G.Speed
 	}
@@ -561,6 +606,8 @@ func (p *Plip) limbDir(li int) (float32, float32) {
 		a = float64(l.side)*0.35 + float64(l.Angle)*0.4
 	case LimbNub:
 		a = 0.7 + float64(l.Angle)*0.3
+	case LimbLeg:
+		return 0, 1
 	}
 	a += math.Sin(float64(p.limbPh)+float64(li)*1.7) * 0.12 // idle sway
 	dx, dy := float32(math.Cos(a)), float32(math.Sin(a))
@@ -578,6 +625,9 @@ func (p *Plip) limbDir(li int) (float32, float32) {
 // limbAnchor is where a limb joins the body.
 func (p *Plip) limbAnchor(li int) (float32, float32) {
 	l := p.limbs[li]
+	if l.leg >= 0 {
+		return p.hip(li)
+	}
 	lobe := 0
 	n := p.lobes()
 	if l.Kind == LimbTail || l.Kind == LimbNub {
@@ -603,6 +653,10 @@ func (p *Plip) limbAnchor(li int) (float32, float32) {
 // toward its resting direction but swings and droops with motion.
 func (p *Plip) solveLimbs(w *World) {
 	for li, l := range p.limbs {
+		if l.leg >= 0 {
+			p.placeLeg(w, li)
+			continue
+		}
 		px, py := p.limbAnchor(li)
 		rx, ry := p.limbDir(li)
 		k := 0.04 + l.Stiff*0.5

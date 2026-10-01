@@ -23,18 +23,19 @@ const (
 	LimbTail           // trails behind
 	LimbWhisker        // pokes forward/sideways from the face
 	LimbNub            // short stub low on the side
+	LimbLeg            // jointed leg under the body; the plip has to learn to use it
 	numLimbKinds
 )
 
-var limbNames = []string{"feelers", "tail", "whiskers", "nubs"}
+var limbNames = []string{"feelers", "tail", "whiskers", "nubs", "legs"}
 
 type Limb struct {
 	Kind   int
 	Len    int     // segments
 	Angle  float32 // tilt off the kind's base direction, radians
 	Stiff  float32 // 0 limp .. 1 stiff
-	Tip    bool    // a little blob on the end
-	Mirror bool    // comes as a left/right pair
+	Tip    bool    // a little blob on the end (a foot, on a leg)
+	Mirror bool    // comes as a pair (front and back, for legs)
 }
 
 // Genome is everything a plip inherits. Body genes shape the look and feel
@@ -57,6 +58,7 @@ type Genome struct {
 	Breath    float32 // breathing amplitude
 	Nucleus   float32 // fraction of particles forming a visible core
 	Limbs     []Limb
+	GrowRate  float32 // how fast limbs grow in as it ages (0 in old saves = 1)
 
 	Skin        bool    // a membrane holds the liquid in
 	SkinStretch float32 // 0 tight .. 1 stretchy and wobbly
@@ -103,8 +105,23 @@ func randomLimb(r *rand.Rand) Limb {
 		l.Len, l.Mirror = 2+r.Intn(4), r.Float32() < 0.5
 	case LimbNub:
 		l.Len, l.Mirror, l.Tip = 1+r.Intn(3), true, false
+	case LimbLeg:
+		l.Len, l.Mirror, l.Tip = 4+r.Intn(5), r.Float32() < 0.85, r.Float32() < 0.5
 	}
 	return l
+}
+
+func legCount(ls []Limb) int {
+	n := 0
+	for _, l := range ls {
+		if l.Kind == LimbLeg {
+			n++
+			if l.Mirror {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // RandomGenome rolls a completely fresh plip.
@@ -141,6 +158,7 @@ func RandomGenome(r *rand.Rand) Genome {
 		Temp:      lerp(0.1, 0.35, f()),
 		Curious:   lerp(0.5, 1.5, f()),
 		Metab:     lerp(0.7, 1.3, f()),
+		GrowRate:  lerp(0.6, 1.6, f()),
 		Instinct:  r.Int63(),
 	}
 	if f() < 0.55 {
@@ -170,8 +188,17 @@ func RandomGenome(r *rand.Rand) Genome {
 	if f() < 0.08 {
 		g.Eyes = 0
 	}
+	if f() < 0.45 {
+		l := randomLimb(r)
+		for l.Kind != LimbLeg {
+			l = randomLimb(r)
+		}
+		g.Limbs = append(g.Limbs, l)
+	}
 	for n := r.Intn(4); n > 0 && f() < 0.8; n-- {
-		g.Limbs = append(g.Limbs, randomLimb(r))
+		if l := randomLimb(r); l.Kind != LimbLeg || legCount(g.Limbs)+2 <= MaxLegs {
+			g.Limbs = append(g.Limbs, l)
+		}
 	}
 	for i := range g.Taste {
 		g.Taste[i] = lerp(0.5, 1.5, f())
@@ -216,6 +243,10 @@ func (g Genome) Mutate(r *rand.Rand, amount float32) Genome {
 	m.Temp = n(g.Temp, 0.06, 0.45)
 	m.Curious = n(g.Curious, 0.2, 2)
 	m.Metab = n(g.Metab, 0.6, 1.4)
+	if g.GrowRate == 0 {
+		g.GrowRate = 1
+	}
+	m.GrowRate = n(g.GrowRate, 0.4, 2)
 	m.SkinStretch = n(g.SkinStretch, 0, 1)
 	m.SkinBend = n(g.SkinBend, 0, 1)
 	m.SkinShade = n(g.SkinShade, 0, 1)
@@ -259,7 +290,9 @@ func (g Genome) Mutate(r *rand.Rand, amount float32) Genome {
 		m.Limbs = append(m.Limbs[:k], m.Limbs[k+1:]...)
 	}
 	if len(m.Limbs) < 4 && chance(0.2) {
-		m.Limbs = append(m.Limbs, randomLimb(r))
+		if l := randomLimb(r); l.Kind != LimbLeg || legCount(m.Limbs)+2 <= MaxLegs {
+			m.Limbs = append(m.Limbs, l)
+		}
 	}
 	// rarer, chunkier changes
 	if chance(0.15) {
