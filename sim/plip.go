@@ -47,10 +47,47 @@ type Plip struct {
 
 	wanderT int
 	Age     int
+
+	limbs   []limbInst
+	limbIdx [][]int32 // particle index per limb segment, rebuilt each tick
+	gScale  float32
+	lumpPh  float64
+	limbPh  float32
+}
+
+// limbInst is one physical limb (a mirrored gene makes two).
+type limbInst struct {
+	Limb
+	side float32 // -1/+1 for a mirrored pair, 0 otherwise
+}
+
+func (l limbInst) segs() int {
+	if l.Tip {
+		return l.Len + 2
+	}
+	return l.Len
 }
 
 func NewPlip(g Genome, name string, withBrain bool) *Plip {
 	p := &Plip{G: g, Name: name, Face: 1, EatCol: -1}
+	p.lumpPh = float64(g.Instinct%628) / 100
+	for _, l := range g.Limbs {
+		if l.Len < 1 {
+			continue
+		}
+		if l.Mirror {
+			p.limbs = append(p.limbs, limbInst{l, -1}, limbInst{l, 1})
+		} else {
+			p.limbs = append(p.limbs, limbInst{l, 0})
+		}
+	}
+	for _, l := range p.limbs {
+		idx := make([]int32, l.segs())
+		for i := range idx {
+			idx[i] = -1
+		}
+		p.limbIdx = append(p.limbIdx, idx)
+	}
 	if withBrain {
 		p.Brain = NewBrain(g)
 		p.Drives = [NDrive]float32{0.3, 0, 0.3, 0.2, 0.1}
@@ -103,6 +140,7 @@ func (p *Plip) layout(w *World) {
 	p.kIn = lerp(0.0025, 0.012, g.Soft)
 	p.kOut = lerp(0.01, 0.06, g.Taut)
 	p.damp = lerp(0.984, 0.998, g.Jiggle)
+	p.gScale = lerp(0.12, 0.7, g.Sag)
 	p.breathScale = 1 + g.Breath*0.1*float32(math.Sin(float64(p.breath)))
 
 	ws := p.lobeWeights()
@@ -183,6 +221,7 @@ func (p *Plip) Update(w *World) {
 		p.stealCD--
 	}
 	p.breath += 0.025 + p.G.Breath*0.02
+	p.limbPh += 0.05
 	p.EatCol, p.StealFrom, p.Resting = -1, 0, false
 
 	if p.Brain != nil {
@@ -506,4 +545,88 @@ func clamp(v, lo, hi float32) float32 {
 		return hi
 	}
 	return v
+}
+
+// limbDir is the resting direction a limb points, in screen space (y down).
+func (p *Plip) limbDir(li int) (float32, float32) {
+	l := p.limbs[li]
+	var a float64
+	switch l.Kind {
+	case LimbFeeler:
+		a = -math.Pi/2 + float64(l.side)*0.45 + float64(l.Angle)*0.6
+	case LimbTail:
+		a = math.Pi + 0.35 + float64(l.Angle)*0.5 // up-and-back, mirrored below
+	case LimbWhisker:
+		a = float64(l.side)*0.35 + float64(l.Angle)*0.4
+	case LimbNub:
+		a = 0.7 + float64(l.Angle)*0.3
+	}
+	a += math.Sin(float64(p.limbPh)+float64(li)*1.7) * 0.12 // idle sway
+	dx, dy := float32(math.Cos(a)), float32(math.Sin(a))
+	switch l.Kind {
+	case LimbTail, LimbWhisker:
+		dx *= p.Face // these follow the way it faces
+	case LimbNub:
+		if l.side < 0 {
+			dx = -dx
+		}
+	}
+	return dx, dy
+}
+
+// limbAnchor is where a limb joins the body.
+func (p *Plip) limbAnchor(li int) (float32, float32) {
+	l := p.limbs[li]
+	lobe := 0
+	n := p.lobes()
+	if l.Kind == LimbTail || l.Kind == LimbNub {
+		// the lobe furthest back, or the lowest one
+		for i := 1; i < n; i++ {
+			if l.Kind == LimbTail && p.LX[i]*p.Face < p.LX[lobe]*p.Face {
+				lobe = i
+			}
+			if l.Kind == LimbNub && p.LY[i] > p.LY[lobe] {
+				lobe = i
+			}
+		}
+	}
+	dx, dy := p.limbDir(li)
+	if l.Kind == LimbNub {
+		dy = 0.3
+	}
+	r := p.LR[lobe] * 0.85
+	return p.CoreX + p.LX[lobe] + dx*r*p.ax, p.CoreY + p.LY[lobe] + dy*r*p.ay
+}
+
+// solveLimbs keeps each limb a chain of evenly spaced particles that leans
+// toward its resting direction but swings and droops with motion.
+func (p *Plip) solveLimbs(w *World) {
+	for li, l := range p.limbs {
+		px, py := p.limbAnchor(li)
+		rx, ry := p.limbDir(li)
+		k := 0.04 + l.Stiff*0.5
+		droop := (1 - l.Stiff) * 0.35
+		for s, i := range p.limbIdx[li] {
+			if i < 0 {
+				continue
+			}
+			seg := float32(1.15)
+			if s >= l.Len {
+				seg = 0.55 // tip blob
+			}
+			cx, cy := w.X[i]-px, w.Y[i]-py
+			if d := hypot(cx, cy); d > 1e-3 {
+				cx, cy = cx/d, cy/d
+			} else {
+				cx, cy = rx, ry
+			}
+			dx := rx*k + cx*(1-k)
+			dy := ry*k + cy*(1-k) + droop*0.3
+			if d := hypot(dx, dy); d > 1e-3 {
+				dx, dy = dx/d, dy/d
+			}
+			w.X[i], w.Y[i] = px+dx*seg, py+dy*seg
+			px, py = w.X[i], w.Y[i]
+		}
+	}
 }

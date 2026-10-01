@@ -44,6 +44,13 @@ var Colours = [NCol]Colour{
 	{"Black", [3]float32{34, 33, 37}},
 }
 
+// Particle roles within a plip.
+const (
+	RoleBody = iota
+	RoleNucleus
+	RoleLimb
+)
+
 // Platform is a one-way surface: liquid landing from above rests on it.
 type Platform struct{ X0, X1, Y float32 }
 
@@ -55,7 +62,7 @@ type World struct {
 	CR, CG, CB           []float32
 	Own                  []uint8 // 0 = loose, otherwise plip ID
 	Mat                  []uint8 // 0 = body plasm, 1..NCol = food colour
-	Lobe, Role           []uint8 // which body lobe; role 1 = nucleus
+	Lobe, Role, Seg      []uint8 // body lobe (or limb index); role: see Role*; limb segment
 	Age                  []int32
 	N                    int
 
@@ -84,6 +91,7 @@ func NewWorld(w, h, floor float32, seed int64) *World {
 	wd.Mat = make([]uint8, MaxP)
 	wd.Lobe = make([]uint8, MaxP)
 	wd.Role = make([]uint8, MaxP)
+	wd.Seg = make([]uint8, MaxP)
 	wd.Age = make([]int32, MaxP)
 	wd.gw, wd.gh = int(w/R)+2, int(h/R)+2
 	wd.head = make([]int32, wd.gw*wd.gh)
@@ -134,6 +142,19 @@ func (w *World) AddPlip(p *Plip, x float32, colours [][3]uint8) {
 		w.addRaw(p.CoreX+p.LX[l]+float32(math.Cos(a))*d, p.CoreY+p.LY[l]+float32(math.Sin(a))*d,
 			0, uint8(p.ID), l, role, col, 0, 0)
 	}
+	limbCol := [3]float32{base[0] * 0.82, base[1] * 0.82, base[2] * 0.85}
+	tipCol := [3]float32{base[0]*1.1 + 12, base[1]*1.1 + 12, base[2]*1.1 + 12}
+	for li, lm := range p.limbs {
+		ax, ay := p.limbAnchor(li)
+		for s := 0; s < lm.segs(); s++ {
+			c := limbCol
+			if s >= lm.Len {
+				c = tipCol
+			}
+			w.addRaw(ax, ay-float32(s), 0, uint8(p.ID), uint8(li), RoleLimb, c, 0, 0)
+			w.Seg[w.N-1] = uint8(s)
+		}
+	}
 }
 
 func pickWeighted(r *rand.Rand, w []float32) uint8 {
@@ -158,7 +179,7 @@ func (w *World) addRaw(x, y float32, mat, own, lobe, role uint8, col [3]float32,
 	i := w.N
 	w.X[i], w.Y[i], w.PX[i], w.PY[i], w.VX[i], w.VY[i] = x, y, x, y, vx, vy
 	w.CR[i], w.CG[i], w.CB[i] = col[0], col[1], col[2]
-	w.Own[i], w.Mat[i], w.Lobe[i], w.Role[i], w.Age[i] = own, mat, lobe, role, 0
+	w.Own[i], w.Mat[i], w.Lobe[i], w.Role[i], w.Age[i], w.Seg[i] = own, mat, lobe, role, 0, 0
 	w.N++
 }
 
@@ -197,7 +218,7 @@ func (w *World) remove(i int) {
 	w.X[i], w.Y[i], w.PX[i], w.PY[i] = w.X[last], w.Y[last], w.PX[last], w.PY[last]
 	w.VX[i], w.VY[i] = w.VX[last], w.VY[last]
 	w.CR[i], w.CG[i], w.CB[i] = w.CR[last], w.CG[last], w.CB[last]
-	w.Own[i], w.Mat[i], w.Lobe[i], w.Role[i], w.Age[i] = w.Own[last], w.Mat[last], w.Lobe[last], w.Role[last], w.Age[last]
+	w.Own[i], w.Mat[i], w.Lobe[i], w.Role[i], w.Age[i], w.Seg[i] = w.Own[last], w.Mat[last], w.Lobe[last], w.Role[last], w.Age[last], w.Seg[last]
 	w.N--
 }
 
@@ -263,7 +284,7 @@ func (w *World) ClearLoose() {
 func (w *World) BodyColours(p *Plip) [][3]uint8 {
 	var out [][3]uint8
 	for i := 0; i < w.N; i++ {
-		if w.Own[i] == uint8(p.ID) {
+		if w.Own[i] == uint8(p.ID) && w.Role[i] != RoleLimb {
 			out = append(out, [3]uint8{u8(w.CR[i]), u8(w.CG[i]), u8(w.CB[i])})
 		}
 	}
@@ -295,16 +316,26 @@ func (w *World) Step() {
 			w.VY[i] += G
 			w.Age[i]++
 		} else {
-			w.VY[i] += G * 0.45 // bodies are partly self-supporting
 			p := w.Plips[o-1]
+			if w.Role[i] == RoleLimb {
+				w.VY[i] += G * 0.3
+				w.VX[i] *= 0.85
+				w.VY[i] *= 0.85
+				goto move
+			}
+			w.VY[i] += G * p.gScale // bodies are partly self-supporting
 			l := w.Lobe[i]
 			cx, cy, r := p.CoreX+p.LX[l], p.CoreY+p.LY[l], p.LR[l]*p.breathScale
 			kout := p.kOut
-			if w.Role[i] == 1 {
+			if w.Role[i] == RoleNucleus {
 				r *= 0.38
 				kout *= 2
 			}
 			dx, dy := cx-w.X[i], cy-w.Y[i]
+			if p.G.Lumpy > 0 && w.Role[i] == RoleBody {
+				th := math.Atan2(float64(-dy), float64(-dx))
+				r *= 1 + p.G.Lumpy*0.3*float32(math.Sin(float64(p.G.LumpK)*th+p.lumpPh))
+			}
 			w.VX[i] += dx * p.kIn
 			w.VY[i] += dy * p.kIn
 			ex, ey := dx/(r*p.ax), dy/(r*p.ay)
@@ -317,6 +348,7 @@ func (w *World) Step() {
 		}
 		w.VX[i] *= damp
 		w.VY[i] *= damp
+	move:
 		if sp := w.VX[i]*w.VX[i] + w.VY[i]*w.VY[i]; sp > 9 {
 			s := 3 / float32(math.Sqrt(float64(sp)))
 			w.VX[i] *= s
@@ -329,6 +361,9 @@ func (w *World) Step() {
 	}
 	w.grid()
 	w.relax()
+	for _, p := range w.Plips {
+		p.solveLimbs(w)
+	}
 	for i := 0; i < w.N; i++ {
 		w.collide(i)
 		w.VX[i] = w.X[i] - w.PX[i]
@@ -368,8 +403,22 @@ func (w *World) census() {
 		n, hn          int
 	}
 	var a [16]acc
+	for _, p := range w.Plips {
+		for li := range p.limbIdx {
+			for sg := range p.limbIdx[li] {
+				p.limbIdx[li][sg] = -1
+			}
+		}
+	}
 	for i := 0; i < w.N; i++ {
 		if o := w.Own[i]; o != 0 {
+			if w.Role[i] == RoleLimb {
+				p := w.Plips[o-1]
+				if li, sg := int(w.Lobe[i]), int(w.Seg[i]); li < len(p.limbIdx) && sg < len(p.limbIdx[li]) {
+					p.limbIdx[li][sg] = int32(i)
+				}
+				continue
+			}
 			s := &a[o]
 			s.sx += w.X[i]
 			s.sy += w.Y[i]
@@ -419,6 +468,9 @@ func (w *World) grid() {
 		w.head[i] = -1
 	}
 	for i := 0; i < w.N; i++ {
+		if w.Role[i] == RoleLimb {
+			continue
+		}
 		gx, gy := int(w.X[i]/R), int(w.Y[i]/R)
 		if gx >= w.gw {
 			gx = w.gw - 1
@@ -434,6 +486,9 @@ func (w *World) grid() {
 
 func (w *World) relax() {
 	for i := 0; i < w.N; i++ {
+		if w.Role[i] == RoleLimb {
+			continue
+		}
 		xi, yi := w.X[i], w.Y[i]
 		cx, cy := int(xi/R), int(yi/R)
 		var rho, rhoN float32

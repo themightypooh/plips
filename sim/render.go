@@ -31,7 +31,7 @@ func (r *Renderer) Render(w *World, dst, bg []byte) {
 		if o := w.Own[i]; o != 0 {
 			g := w.Plips[o-1].G
 			alpha, rim = g.Alpha, g.Rim
-			if w.Role[i] == 0 {
+			if w.Role[i] == RoleBody {
 				lobe = float32(w.Lobe[i])
 			}
 		}
@@ -149,11 +149,9 @@ func (r *Renderer) set(dst []byte, x, y int, c [3]uint8) {
 	r.Alpha[o] = 255
 }
 
-var (
-	eyeWhite = [3]uint8{236, 234, 226}
-	eyeDark  = [3]uint8{20, 20, 24}
-)
+var eyeDark = [3]uint8{20, 20, 24}
 
+// eyes are small dark dots on the head.
 func (r *Renderer) eyes(p *Plip, dst []byte) {
 	g := p.G
 	if g.Eyes == 0 || p.Mass < 12 {
@@ -162,63 +160,36 @@ func (r *Renderer) eyes(p *Plip, dst []byte) {
 	hr := p.LR[0]
 	cx := p.HeadX + p.Face*hr*0.25*p.ax
 	cy := p.HeadY - hr*p.ay*g.EyeHigh
-	gap := float32(math.Max(float64(g.EyeSize)+1, float64(hr*g.EyeGap*2*p.ax)))
 	s := g.EyeSize
-	closed := p.Blink > 0 || p.Flinch > 0 || p.Resting
+	if s < 1 {
+		s = 1
+	}
+	gap := float32(math.Max(float64(s)+1, float64(hr*g.EyeGap*2*p.ax)))
+	asleep := p.Resting
+	if p.Blink > 0 && !asleep {
+		return // a blink: the dots vanish for a moment
+	}
 	for e := 0; e < g.Eyes; e++ {
 		off := (float32(e) - float32(g.Eyes-1)/2) * gap
-		ex := int(math.Round(float64(cx + off - float32(s)/2)))
-		ey := int(math.Round(float64(cy - float32(s)/2)))
+		ex := int(math.Round(float64(cx + off - float32(s-1)/2)))
+		ey := int(math.Round(float64(cy)))
 		if g.Eyes == 3 && e == 1 {
-			ey -= s // middle eye sits higher
+			ey -= s
 		}
-		if closed {
-			for i := 0; i < s; i++ {
-				r.set(dst, ex+i, ey+s-1, eyeDark)
-			}
-			continue
-		}
-		if p.Happy > 0 {
-			// little upturned arcs
-			for i := 0; i < s; i++ {
-				yy := ey + s - 1
-				if s > 1 && (i == 0 || i == s-1) {
-					yy++
-				}
-				r.set(dst, ex+i, yy-1, eyeDark)
-			}
-			continue
-		}
-		if s == 1 {
-			r.set(dst, ex, ey, eyeDark)
-			continue
-		}
-		switch g.Pupil {
-		case 1: // solid dark eye with a highlight
+		switch {
+		case asleep || p.Flinch > 0: // squeezed shut: a short dash
+			r.set(dst, ex, ey+s-1, eyeDark)
+			r.set(dst, ex+1, ey+s-1, eyeDark)
+		case p.Happy > 0: // pleased: dots lift a pixel
 			for yy := 0; yy < s; yy++ {
 				for xx := 0; xx < s; xx++ {
-					r.set(dst, ex+xx, ey+yy, eyeDark)
+					r.set(dst, ex+xx, ey+yy-1, eyeDark)
 				}
 			}
-			r.set(dst, ex, ey, eyeWhite)
 		default:
 			for yy := 0; yy < s; yy++ {
 				for xx := 0; xx < s; xx++ {
-					r.set(dst, ex+xx, ey+yy, eyeWhite)
-				}
-			}
-			px := ex
-			if p.Face > 0 {
-				px = ex + s - 1
-			}
-			if g.Pupil == 2 { // tall slit
-				for yy := 0; yy < s; yy++ {
-					r.set(dst, px, ey+yy, eyeDark)
-				}
-			} else {
-				r.set(dst, px, ey+s-1, eyeDark)
-				if s == 3 {
-					r.set(dst, px, ey+1, eyeDark)
+					r.set(dst, ex+xx, ey+yy, eyeDark)
 				}
 			}
 		}
