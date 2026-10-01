@@ -25,10 +25,11 @@ const (
 )
 
 type Motor struct {
-	W     [mOut][mIn]float32
-	Freq  float32 // step rhythm, before squashing
-	Skill float32 // running average speed while trying to move, px/tick
-	Tries int     // trial pairs done
+	W        [mOut][mIn]float32
+	Freq     float32 // step rhythm, before squashing
+	Skill    float32 // running average speed while trying to move, px/tick
+	Strength float32 // how much weight the legs can hold up, built by use
+	Tries    int     // trial pairs done
 
 	eps         [mParams]float32
 	sgn         float32
@@ -74,8 +75,8 @@ func (m *Motor) rate() float32 {
 	return 0.04 + 0.2/(1+float32(math.Exp(-float64(f))))
 }
 
-// targets gives (hip, knee) per leg. Hip 0 is straight down, positive swings
-// forward; knee 0 is straight, larger bends the shin back.
+// targets gives (thigh, shin) swing per leg around its resting pose,
+// positive forward.
 func (m *Motor) targets(ph float32, contact [MaxLegs]float32, lift float32) (out [MaxLegs][2]float32) {
 	var x [mIn]float32
 	s1, c1 := math.Sincos(float64(ph))
@@ -89,8 +90,8 @@ func (m *Motor) targets(ph float32, contact [MaxLegs]float32, lift float32) (out
 			h += m.w(2*k, i) * v
 			kn += m.w(2*k+1, i) * v
 		}
-		out[k][0] = 1.1 * tanh(h)
-		out[k][1] = 0.8 * (1 + tanh(kn))
+		out[k][0] = 0.6 * tanh(h)
+		out[k][1] = 0.55 * tanh(kn)
 	}
 	return
 }

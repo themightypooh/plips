@@ -7,7 +7,7 @@ import (
 
 func leggedGenome(r *rand.Rand) Genome {
 	g := RandomGenome(r)
-	g.Limbs = []Limb{{Kind: LimbLeg, Len: 6, Stiff: 0.6, Tip: true, Mirror: true}}
+	g.Limbs = []Limb{{Kind: LimbLeg, Len: 20, Stiff: 0.6, Tip: true, Mirror: true}}
 	g.Mass = 100
 	return g
 }
@@ -49,6 +49,7 @@ func TestLegsLearnToWalk(t *testing.T) {
 		w := NewWorld(RoomW, RoomH, RoomFloor, seed)
 		p := NewPlip(leggedGenome(r), "", false)
 		w.AddPlip(p, 100, nil)
+		p.Motor.Strength = 1 // strong legs; this is about finding a gait
 		sp := walkSpeed(p, w, 12, 120*30)
 		t.Logf("seed %d ooze max %.3f speeds %.3f skill %.3f %s", seed, 0.2*p.G.Speed, sp, p.Motor.Skill, p.WalkWords())
 		if sp[len(sp)-1] > sp[0]*1.3 {
@@ -84,5 +85,21 @@ func TestLimbsGrowFromBody(t *testing.T) {
 				t.Fatalf("limb %d seg %d: grown %d but idx %d", li, s, p.limbs[li].grown, i)
 			}
 		}
+	}
+}
+
+func TestLegsGainStrengthWithUse(t *testing.T) {
+	r := rand.New(rand.NewSource(5))
+	w := NewWorld(RoomW, RoomH, RoomFloor, 5)
+	p := NewPlip(leggedGenome(r), "", false)
+	w.AddPlip(p, 100, nil)
+	walkSpeed(p, w, 1, 120*20)
+	if p.legLift > p.Rad*0.1 {
+		t.Fatalf("weak new legs lifted the body %.2f px", p.legLift)
+	}
+	walkSpeed(p, w, 1, 120*60*12)
+	t.Logf("strength %.2f lift %.2f rad %.2f", p.Strength(), p.legLift, p.Rad)
+	if p.Strength() < 0.2 || p.Strength() > 0.9 {
+		t.Fatalf("strength after 12 min of walking: %.2f", p.Strength())
 	}
 }

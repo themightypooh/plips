@@ -20,10 +20,13 @@ func main() {
 	out := flag.String("out", "shots", "output folder")
 	seed := flag.Int64("seed", 1, "random seed")
 	secs := flag.Int("secs", 180, "seconds of room life to simulate")
+	only := flag.String("only", "", `"legs" renders just the legs strip`)
 	flag.Parse()
 	os.MkdirAll(*out, 0o755)
-	gallery(*out, *seed)
-	room(*out, *seed, *secs)
+	if *only != "legs" {
+		gallery(*out, *seed)
+		room(*out, *seed, *secs)
+	}
 	legs(*out, *seed)
 }
 
@@ -131,14 +134,14 @@ func save(path string, src *image.RGBA, scale int) {
 }
 
 // legs renders one legged plip as its legs grow in and it learns to walk:
-// a strip of frames, top row untrained, bottom row after some practice.
+// a row of frames when new, then every 8 minutes of practice.
 func legs(out string, seed int64) {
 	r := rand.New(rand.NewSource(seed + 7))
 	g := sim.RandomGenome(r)
-	g.Limbs = []sim.Limb{{Kind: sim.LimbLeg, Len: 7, Stiff: 0.6, Tip: true, Mirror: true}}
+	g.Limbs = []sim.Limb{{Kind: sim.LimbLeg, Len: 20, Stiff: 0.6, Tip: true, Mirror: true}}
 	g.Hue, g.Sat, g.Val = 0.55, 0.35, 0.85 // light blue
 	const fw, fh, fl, nf = 120, 56, 48, 6
-	img := image.NewRGBA(image.Rect(0, 0, fw*nf, fh*2))
+	img := image.NewRGBA(image.Rect(0, 0, fw*nf, fh*4))
 	bg := sim.CellBackground(fw, fh, fl)
 	buf := make([]byte, fw*fh*4)
 	rd := sim.NewRenderer(fw, fh)
@@ -165,11 +168,14 @@ func legs(out string, seed int64) {
 		run(9)
 		shot(0, f)
 	}
-	run(120 * 60 * 5)
-	for f := 0; f < nf; f++ {
-		run(9)
-		shot(1, f)
+	for row := 1; row < 4; row++ {
+		run(120 * 60 * 8)
+		for f := 0; f < nf; f++ {
+			run(9)
+			shot(row, f)
+		}
+		fmt.Printf("legs after %d min: %s, strength %.2f, lift %.1f, skill %.3f px/tick\n",
+			row*8, p.WalkWords(), p.Strength(), p.LegLift(), p.Motor.Skill)
 	}
-	fmt.Printf("legs: %s, skill %.3f px/tick\n", p.WalkWords(), p.Motor.Skill)
 	save(filepath.Join(out, "legs.png"), img, 4)
 }

@@ -106,7 +106,7 @@ func randomLimb(r *rand.Rand) Limb {
 	case LimbNub:
 		l.Len, l.Mirror, l.Tip = 1+r.Intn(3), true, false
 	case LimbLeg:
-		l.Len, l.Mirror, l.Tip = 4+r.Intn(5), r.Float32() < 0.85, r.Float32() < 0.5
+		l.Len, l.Mirror, l.Tip = 16+r.Intn(10), r.Float32() < 0.85, r.Float32() < 0.5
 	}
 	return l
 }
@@ -279,7 +279,11 @@ func (g Genome) Mutate(r *rand.Rand, amount float32) Genome {
 		l.Stiff = n(l.Stiff, 0, 1)
 		l.Angle = n(l.Angle, -0.8, 0.8)
 		if chance(0.3) {
-			l.Len = int(n(float32(l.Len), 1, 11))
+			if l.Kind == LimbLeg {
+				l.Len = int(n(float32(l.Len), 10, 26))
+			} else {
+				l.Len = int(n(float32(l.Len), 1, 11))
+			}
 		}
 		if chance(0.1) {
 			l.Tip = !l.Tip

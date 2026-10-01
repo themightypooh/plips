@@ -70,7 +70,7 @@ type limbInst struct {
 	grown int     // segments grown in so far
 
 	leg                 int     // index among the legs, -1 if not a leg
-	a1, a2              float32 // hip angle (0 down, + forward) and knee bend
+	a1, a2, a2e         float32 // thigh tilt from up, shin swing from down (+ forward); a2e after the floor
 	reach, fx, pfx      float32 // foot height below the hip, foot x ahead of the hip
 	contact, wasContact bool
 }
@@ -281,7 +281,7 @@ func (p *Plip) Update(w *World) {
 	want := math.Abs(float64(dx)) > 1.5
 	step := clamp(dx*0.03, -speed, speed)
 	if p.nLegs > 0 {
-		step *= 1 - 0.6*p.legGrowth() // legs get in the way of oozing
+		step *= 1 - 0.4*p.legGrowth() // legs get in the way of oozing
 		if p.legLift > 1 {
 			step *= 0.35 // and standing up on them, it can barely ooze at all
 		}

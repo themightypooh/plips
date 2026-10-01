@@ -16,7 +16,7 @@ import (
 	"plips/sim"
 )
 
-const version = "v0.5"
+const version = "v0.5.1"
 
 type mode int
 
