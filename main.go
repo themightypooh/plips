@@ -16,6 +16,8 @@ import (
 	"plips/sim"
 )
 
+const version = "v0.4"
+
 type mode int
 
 const (
@@ -55,7 +57,7 @@ func main() {
 		g.mode = modeRoom
 	}
 
-	ebiten.SetWindowTitle("Plips")
+	ebiten.SetWindowTitle("Plips " + version)
 	ebiten.SetTPS(60)
 	mw, mh := ebiten.Monitor().Size()
 	ww, wh := min(1300, mw*9/10), min(860, mh*8/10)
