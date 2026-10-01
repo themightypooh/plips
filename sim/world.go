@@ -150,7 +150,7 @@ func (w *World) AddPlip(p *Plip, x float32, colours [][3]uint8) {
 	tipCol := [3]float32{base[0]*1.1 + 12, base[1]*1.1 + 12, base[2]*1.1 + 12}
 	for li, lm := range p.limbs {
 		ax, ay := p.limbAnchor(li)
-		for s := 0; s < lm.segs(); s++ {
+		for s := 0; s < lm.grown; s++ {
 			c := limbCol
 			if s >= lm.Len {
 				c = tipCol

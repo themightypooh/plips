@@ -22,6 +22,8 @@ type SavedPlip struct {
 	Drives  [sim.NDrive]float32     `json:"drives"`
 	Colours [][3]uint8              `json:"colours"`
 	Age     int                     `json:"age"`
+	Limbs   []int                   `json:"limbs,omitempty"` // segments grown per limb
+	Motor   *sim.Motor              `json:"motor,omitempty"` // learned leg control
 }
 
 func dataDir() string {

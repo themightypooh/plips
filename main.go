@@ -16,7 +16,7 @@ import (
 	"plips/sim"
 )
 
-const version = "v0.4"
+const version = "v0.5.1"
 
 type mode int
 
@@ -112,11 +112,13 @@ func (g *Game) Update() error {
 
 	// top bar: tabs
 	x := 12.0
-	if c, w := u.Button(x, 9, "Gallery", g.mode == modeGallery, false); c {
+	// Advance x whether or not Gallery was clicked: if Room were declared at
+	// the same spot, the same click would hit it too and flip straight back.
+	c, w := u.Button(x, 9, "Gallery", g.mode == modeGallery, false)
+	if c {
 		g.mode = modeGallery
-	} else {
-		x += w + 6
 	}
+	x += w + 6
 	if c, _ := u.Button(x, 9, fmt.Sprintf("Room (%d)", len(g.room.Plips())), g.mode == modeRoom, false); c {
 		g.mode = modeRoom
 	}

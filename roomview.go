@@ -54,6 +54,15 @@ func (rm *Room) add(s SavedPlip) *sim.Plip {
 	pl.Brain.W = s.Brain
 	pl.Drives = s.Drives
 	pl.Age = s.Age
+	switch {
+	case s.Limbs != nil:
+		pl.SetLimbGrowth(s.Limbs)
+	case s.Age == 0:
+		pl.Bud() // hatchlings start with buds that grow in
+	}
+	if s.Motor != nil && pl.Motor != nil {
+		pl.Motor = s.Motor
+	}
 	x := 30 + rm.rng.Float32()*(sim.RoomW-60)
 	rm.w.AddPlip(pl, x, s.Colours)
 	return pl
@@ -87,6 +96,7 @@ func (rm *Room) Snapshot() []SavedPlip {
 		out = append(out, SavedPlip{
 			Name: pl.Name, Genome: pl.G, Brain: pl.Brain.W, Drives: pl.Drives,
 			Colours: rm.w.BodyColours(pl), Age: pl.Age,
+			Limbs: pl.LimbGrowth(), Motor: pl.Motor,
 		})
 	}
 	return out
@@ -162,7 +172,7 @@ func (rm *Room) Draw(screen *ebiten.Image, ox, oy, s float64, info, cursor bool,
 }
 
 func (rm *Room) drawCard(screen *ebiten.Image, pl *sim.Plip, x, y float64) {
-	vector.FillRect(screen, float32(x), float32(y), 212, 132, color.RGBA{12, 14, 15, 200}, false)
+	vector.FillRect(screen, float32(x), float32(y), 212, 146, color.RGBA{12, 14, 15, 200}, false)
 	drawText(screen, fmt.Sprintf("%s   %d drops", pl.Name, pl.Mass), x+10, y+6, 14, colText)
 	drawText(screen, pl.Doing(rm.w), x+10, y+24, 13, colAccent)
 	for d := 0; d < sim.NDrive; d++ {
@@ -172,6 +182,9 @@ func (rm *Room) drawCard(screen *ebiten.Image, pl *sim.Plip, x, y float64) {
 		vector.FillRect(screen, float32(x+60), float32(yy+2), 140*pl.Drives[d], 5, color.RGBA{160, 180, 168, 255}, false)
 	}
 	drawText(screen, likes(pl), x+10, y+112, 11, colDim)
+	if n, grown := pl.Legs(); n > 0 {
+		drawText(screen, fmt.Sprintf("%d legs, %d%% grown, %s", n, int(grown*100), pl.WalkWords()), x+10, y+127, 11, colDim)
+	}
 }
 
 func setPx(buf []byte, x, y int, c [3]uint8) {
