@@ -58,6 +58,13 @@ type Genome struct {
 	Nucleus   float32 // fraction of particles forming a visible core
 	Limbs     []Limb
 
+	Skin        bool    // a membrane holds the liquid in
+	SkinStretch float32 // 0 tight .. 1 stretchy and wobbly
+	SkinBend    float32 // 0 crinkly .. 1 smooth and stiff
+	SkinWrinkle float32 // fine ripples in the outline
+	SkinShade   float32 // 0 dark rim .. 1 pale glossy rim
+	SkinClear   float32 // 0 milky .. 1 see-through
+
 	Hue, Sat, Val float32
 	Speckle       float32 // per-particle colour noise
 	Spots         float32 // fraction of particles in the second colour
@@ -146,6 +153,11 @@ func RandomGenome(r *rand.Rand) Genome {
 	if f() < 0.4 {
 		g.Lumpy = lerp(0.2, 1, f())
 	}
+	g.Skin = f() < 0.9
+	g.SkinStretch, g.SkinBend, g.SkinShade, g.SkinClear = f(), f(), f(), f()
+	if f() < 0.3 {
+		g.SkinWrinkle = f()
+	}
 	if f() < 0.3 {
 		g.Nucleus = lerp(0.06, 0.25, f())
 	}
@@ -204,6 +216,16 @@ func (g Genome) Mutate(r *rand.Rand, amount float32) Genome {
 	m.Temp = n(g.Temp, 0.06, 0.45)
 	m.Curious = n(g.Curious, 0.2, 2)
 	m.Metab = n(g.Metab, 0.6, 1.4)
+	m.SkinStretch = n(g.SkinStretch, 0, 1)
+	m.SkinBend = n(g.SkinBend, 0, 1)
+	m.SkinShade = n(g.SkinShade, 0, 1)
+	m.SkinClear = n(g.SkinClear, 0, 1)
+	if g.SkinWrinkle > 0 || chance(0.15) {
+		m.SkinWrinkle = n(g.SkinWrinkle, 0, 1)
+	}
+	if chance(0.08) {
+		m.Skin = !g.Skin
+	}
 	if g.Lumpy > 0 || chance(0.15) {
 		m.Lumpy = n(g.Lumpy, 0, 1)
 	}
@@ -280,6 +302,11 @@ func (g Genome) Describe() string {
 	words := []string{shape, word(g.Soft, "floppy", "", "firm"), word(g.Sag, "", "", "slumpy")}
 	if g.Lumpy > 0.4 {
 		words = append(words, "lumpy")
+	}
+	if !g.Skin {
+		words = append(words, "skinless")
+	} else if g.SkinStretch > 0.7 {
+		words = append(words, "stretchy")
 	}
 	seen := map[int]bool{}
 	for _, l := range g.Limbs {

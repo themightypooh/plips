@@ -92,6 +92,19 @@ things, and appearance changing based on what happens to them (like Wobbledogs).
 Build: `GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o dist/plips.exe .`
 (The `main` package only builds for Windows here.)
 
+## Membrane (v0.3)
+
+Most plips (gene `Skin`, ~90%) have a membrane: a closed ring of `RoleSkin` particles
+(`sim/membrane.go`). Each tick it pulls toward the genome's outline (`envelope`: union of lobe
+ellipses plus lumps and wrinkles), keeps neighbour spacing (`SkinStretch`), resists bending
+(`SkinBend`), and inflates to the target area. Liquid that ends up outside is put back inside.
+The renderer fills the inside (`SkinClear` sets how see-through it is) and draws the outline
+(`SkinShade` goes from a dark rim to a pale glossy one). The user asked for it because the plips
+looked scattered when they moved, and wants it pushed further: popping, thickness, patterns,
+squash on landing and so on.
+
+The box/ball/curiosity brain work is parked on the `wip-box-brain` branch and isn't merged.
+
 ## User feedback and next direction
 
 - Eyes: no white square eyes ("dumb af"). They like the tiny dark dot eyes (`EyeSize` 1).

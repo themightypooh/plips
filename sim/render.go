@@ -7,6 +7,7 @@ import "math"
 type Renderer struct {
 	W, H                             int
 	den, ar, ag, ab, aa, rim, sh, lb []float32
+	skin                             []uint8 // plip ID whose membrane covers the pixel
 	// Alpha of the pixel last drawn; used for click-through hit tests.
 	Alpha []uint8
 }
@@ -81,21 +82,23 @@ func (r *Renderer) Render(w *World, dst, bg []byte) {
 		}
 	}
 
+	r.skinMask(w)
+	full := func(o int) bool { return r.den[o] > thresh || r.skin[o] != 0 }
 	for y := 0; y < H; y++ {
 		for x := 0; x < W; x++ {
 			o := y*W + x
 			pp := o * 4
 			if d := r.den[o]; d > thresh {
-				up := y > 0 && r.den[o-W] > thresh
-				dn := y < H-1 && r.den[o+W] > thresh
-				lf := x > 0 && r.den[o-1] > thresh
-				rt := x < W-1 && r.den[o+1] > thresh
+				up := y > 0 && full(o-W)
+				dn := y < H-1 && full(o+W)
+				lf := x > 0 && full(o-1)
+				rt := x < W-1 && full(o+1)
 				s := 0.92 + float32(math.Min(float64(d), 3))*0.04
 				if !up {
 					s = 1.28
 				} else if !dn || !lf || !rt {
 					s = 1 - 0.55*(r.rim[o]/d)
-				} else if y > 1 && r.den[o-2*W] <= thresh {
+				} else if y > 1 && !full(o-2*W) {
 					s = 1.1
 				} else if seam(r.lb[o]/d, r.lb[o+1]/r.den[o+1]) || seam(r.lb[o]/d, r.lb[o+W]/r.den[o+W]) {
 					s = 1 - 0.3*(r.rim[o]/d) // crease where two body lobes meet
@@ -114,6 +117,8 @@ func (r *Renderer) Render(w *World, dst, bg []byte) {
 					dst[pp+2] = byte(float32(cb) * a)
 					dst[pp+3] = byte(a * 255)
 				}
+			} else if id := r.skin[o]; id != 0 {
+				r.skinFill(w.Plips[id-1], dst, bg, pp)
 			} else if bg != nil {
 				k := 1 - r.sh[o]
 				dst[pp] = byte(float32(bg[pp]) * k)
@@ -128,8 +133,109 @@ func (r *Renderer) Render(w *World, dst, bg []byte) {
 		}
 	}
 	for _, p := range w.Plips {
+		r.skinEdge(w, p, dst)
+	}
+	for _, p := range w.Plips {
 		r.eyes(p, dst)
 	}
+}
+
+// skinMask marks the pixels inside each membrane.
+func (r *Renderer) skinMask(w *World) {
+	if len(r.skin) != r.W*r.H {
+		r.skin = make([]uint8, r.W*r.H)
+	}
+	for i := range r.skin {
+		r.skin[i] = 0
+	}
+	for _, p := range w.Plips {
+		xs, ys := p.skinPoly(w)
+		if xs == nil {
+			continue
+		}
+		x0, y0, x1, y1 := xs[0], ys[0], xs[0], ys[0]
+		for k := range xs {
+			x0, x1 = min(x0, xs[k]), max(x1, xs[k])
+			y0, y1 = min(y0, ys[k]), max(y1, ys[k])
+		}
+		for y := max(0, int(y0)); y <= min(r.H-1, int(y1)+1); y++ {
+			for x := max(0, int(x0)); x <= min(r.W-1, int(x1)+1); x++ {
+				if pointIn(xs, ys, float32(x)+0.5, float32(y)+0.5) {
+					r.skin[y*r.W+x] = uint8(p.ID)
+				}
+			}
+		}
+	}
+}
+
+// skinFill paints membrane where no liquid is showing: the skin colour,
+// see-through to whatever is behind by the SkinClear gene.
+func (r *Renderer) skinFill(p *Plip, dst, bg []byte, pp int) {
+	c := p.G.BaseColor()
+	a := lerp(0.92, 0.35, p.G.SkinClear) * p.G.Alpha
+	cr, cg, cb := q8(c[0]*0.86), q8(c[1]*0.86), q8(c[2]*0.88)
+	if bg != nil {
+		dst[pp] = byte(float32(cr)*a + float32(bg[pp])*(1-a))
+		dst[pp+1] = byte(float32(cg)*a + float32(bg[pp+1])*(1-a))
+		dst[pp+2] = byte(float32(cb)*a + float32(bg[pp+2])*(1-a))
+		dst[pp+3] = 255
+	} else {
+		dst[pp], dst[pp+1], dst[pp+2], dst[pp+3] = byte(float32(cr)*a), byte(float32(cg)*a), byte(float32(cb)*a), byte(a*255)
+	}
+}
+
+// skinEdge draws the membrane outline, with a glossy top for pale skins.
+func (r *Renderer) skinEdge(w *World, p *Plip, dst []byte) {
+	xs, ys := p.skinPoly(w)
+	if xs == nil {
+		return
+	}
+	c := p.G.BaseColor()
+	k := lerp(0.5, 1.35, p.G.SkinShade)
+	rim := [3]uint8{q8(c[0]*k + 6), q8(c[1]*k + 6), q8(c[2]*k + 6)}
+	gloss := [3]uint8{q8(c[0]*1.3 + 30), q8(c[1]*1.3 + 30), q8(c[2]*1.3 + 30)}
+	n := len(xs)
+	for k := 0; k < n; k++ {
+		j := (k + 1) % n
+		x0, y0 := int(math.Floor(float64(xs[k]))), int(math.Floor(float64(ys[k])))
+		x1, y1 := int(math.Floor(float64(xs[j]))), int(math.Floor(float64(ys[j])))
+		dx, dy := abs(x1-x0), -abs(y1-y0)
+		sx, sy := 1, 1
+		if x0 > x1 {
+			sx = -1
+		}
+		if y0 > y1 {
+			sy = -1
+		}
+		e := dx + dy
+		for {
+			col := rim
+			// the top-left of the outline catches the light
+			if p.G.SkinShade > 0.45 && ys[k] < p.MY-p.Rad*0.4 && xs[k] < p.MX {
+				col = gloss
+			}
+			r.set(dst, x0, y0, col)
+			if x0 == x1 && y0 == y1 {
+				break
+			}
+			e2 := 2 * e
+			if e2 >= dy {
+				e += dy
+				x0 += sx
+			}
+			if e2 <= dx {
+				e += dx
+				y0 += sy
+			}
+		}
+	}
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func seam(a, b float32) bool { return a-b > 0.45 || b-a > 0.45 }

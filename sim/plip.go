@@ -50,6 +50,7 @@ type Plip struct {
 
 	limbs   []limbInst
 	limbIdx [][]int32 // particle index per limb segment, rebuilt each tick
+	skinIdx []int32   // membrane ring, in order; nil = no skin
 	gScale  float32
 	lumpPh  float64
 	limbPh  float32
