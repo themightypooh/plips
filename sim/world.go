@@ -66,7 +66,9 @@ type World struct {
 	Age                  []int32
 	N                    int
 
-	Plips []*Plip
+	Plips      []*Plip
+	Objects    []*Object
+	FoodEvents []FoodEvent // recent food appearances, newest last
 
 	Hand struct {
 		X, Y    float32
@@ -191,6 +193,7 @@ func (w *World) loose(x, y float32, col int, vx, vy float32) {
 
 // Splash drops a blob of loose liquid of colour col (0..NCol-1).
 func (w *World) Splash(x, y float32, col, count int) {
+	w.FoodEvents = append(w.FoodEvents, FoodEvent{X: x, Tick: w.Tick})
 	for k := 0; k < count; k++ {
 		a := w.Rng.Float64() * 2 * math.Pi
 		d := float32(math.Sqrt(w.Rng.Float64())) * 3.2
@@ -200,6 +203,7 @@ func (w *World) Splash(x, y float32, col, count int) {
 
 // Drop adds a single droplet (a few particles so it reads as one drop).
 func (w *World) Drop(x, y float32, col int) {
+	w.FoodEvents = append(w.FoodEvents, FoodEvent{X: x, Tick: w.Tick})
 	for k := 0; k < 3; k++ {
 		w.loose(x+(w.Rng.Float32()-0.5)*0.8, y+(w.Rng.Float32()-0.5)*0.8, col, 0, 0.3)
 	}
@@ -207,6 +211,9 @@ func (w *World) Drop(x, y float32, col int) {
 
 // Stream adds one particle of a falling stream.
 func (w *World) Stream(x, y float32, col int) {
+	if n := len(w.FoodEvents); n == 0 || w.Tick-w.FoodEvents[n-1].Tick > 30 {
+		w.FoodEvents = append(w.FoodEvents, FoodEvent{X: x, Tick: w.Tick})
+	}
 	w.loose(x+(w.Rng.Float32()-0.5)*0.3, y, col, 0, 1.4)
 }
 
@@ -304,6 +311,10 @@ func u8(v float32) uint8 {
 // Step advances the world by one physics tick (the game runs two per frame).
 func (w *World) Step() {
 	w.Tick++
+	w.stepObjects()
+	for len(w.FoodEvents) > 0 && w.Tick-w.FoodEvents[0].Tick > 1200 {
+		w.FoodEvents = w.FoodEvents[1:]
+	}
 	w.census()
 	for _, p := range w.Plips {
 		p.Update(w)
@@ -379,6 +390,9 @@ func (w *World) collide(i int) {
 	}
 	if w.Y[i] < 1 {
 		w.Y[i] = 1
+	}
+	if len(w.Objects) > 0 {
+		w.pushOut(i)
 	}
 	if w.Y[i] >= w.Floor {
 		w.Y[i] = w.Floor

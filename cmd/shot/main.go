@@ -60,32 +60,36 @@ func room(out string, seed int64, secs int) {
 	r := rand.New(rand.NewSource(seed + 99))
 	w := sim.NewWorld(sim.RoomW, sim.RoomH, sim.RoomFloor, seed)
 	w.Platforms = sim.RoomPlatforms
-	for i, x := range []float32{110, 210} {
-		p := sim.NewPlip(sim.RandomGenome(r), sim.RandomName(r), true)
-		_ = i
-		w.AddPlip(p, x, nil)
-	}
+	w.Objects = []*sim.Object{sim.NewBox(70), sim.NewBall(240)}
+	p := sim.NewPlip(sim.RandomGenome(r), sim.RandomName(r), true)
+	w.AddPlip(p, 160, nil)
 	bg := sim.RoomBackground()
 	rd := sim.NewRenderer(sim.RoomW, sim.RoomH)
 	buf := make([]byte, sim.RoomW*sim.RoomH*4)
-	acts := map[string]int{}
 	steps := secs * 120
+	type tally struct{ push, pushHungry, hungryDecisions int }
+	var per []tally
+	cur := tally{}
+	lastAct := -1
 	for s := 0; s < steps; s++ {
-		if s%(120*6) == 0 { // somebody drops food every 6 s
-			w.Splash(20+r.Float32()*280, 30, r.Intn(sim.NCol), 30)
+		w.Step()
+		if p.Doing(w) != "" && (p.Act != lastAct || s%120 == 0) {
+			lastAct = p.Act
 		}
-		if s%(120*20) == 0 && s > 0 { // and pets whoever is eating blue
-			for _, p := range w.Plips {
-				if p.Act == sim.AEat && p.Tgt == 4 {
-					p.Pet()
+		if s%240 == 0 { // sample what it's up to every 2 s
+			if p.Drives[sim.Hunger] > 0.4 {
+				cur.hungryDecisions++
+				if p.Act == sim.APush && p.Tgt == sim.TBox {
+					cur.pushHungry++
 				}
 			}
-		}
-		w.Step()
-		if s%120 == 0 {
-			for _, p := range w.Plips {
-				acts[p.Name+": "+sim.ActNames[p.Act]]++
+			if p.Act == sim.APush && p.Tgt == sim.TBox {
+				cur.push++
 			}
+		}
+		if s%(120*120) == 120*120-1 {
+			per = append(per, cur)
+			cur = tally{}
 		}
 		if s == steps/2 {
 			rd.Render(w, buf, bg)
@@ -94,15 +98,21 @@ func room(out string, seed int64, secs int) {
 	}
 	rd.Render(w, buf, bg)
 	saveBuf(filepath.Join(out, "room.png"), buf, 4)
-	fmt.Println("particles:", w.N)
-	for _, p := range w.Plips {
-		fmt.Printf("%s mass %d drives %.2f doing %q likes:", p.Name, p.Mass, p.Drives, p.Doing(w))
-		for c := 0; c < sim.NCol; c++ {
-			fmt.Printf(" %s %.2f", sim.Colours[c].Name, p.Brain.Liking(c))
-		}
-		fmt.Println()
+	fmt.Printf("%s: mass %d drives %.2f, box food %d, eaten %d, box dispensed %d\n", p.Name, p.Mass, p.Drives, p.BoxFood, p.Eaten, w.Objects[0].Dispensed)
+	for i, t := range per {
+		fmt.Printf("  minutes %2d-%2d: pushing box %2d/60 samples, when hungry %d/%d\n", i*2, i*2+2, t.push, t.pushHungry, t.hungryDecisions)
 	}
-	fmt.Println(acts)
+	fmt.Println("ideas now:", p.Ideas(w, 4))
+	for t := 0; t < sim.NT; t++ {
+		for a := 0; a < sim.NA; a++ {
+			if st := p.Stats[t][a]; st.N > 0 {
+				fmt.Printf("    %-26s n=%3d reward %+.3f surprise %.3f\n", p.ActText(a, t), st.N, st.Reward/float32(st.N), st.Surprise/float32(st.N))
+			}
+		}
+	}
+	for _, d := range p.Diary {
+		fmt.Println("  diary:", d.Text)
+	}
 }
 
 func saveBuf(path string, buf []byte, scale int) {

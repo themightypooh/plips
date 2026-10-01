@@ -131,7 +131,7 @@ func RandomGenome(r *rand.Rand) Genome {
 		Hoppy:     f(),
 		Speed:     lerp(0.6, 1.4, f()),
 		LR:        lerp(0.02, 0.08, f()),
-		Temp:      lerp(0.1, 0.35, f()),
+		Temp:      lerp(0.08, 0.25, f()),
 		Curious:   lerp(0.5, 1.5, f()),
 		Metab:     lerp(0.7, 1.3, f()),
 		Instinct:  r.Int63(),
@@ -201,7 +201,7 @@ func (g Genome) Mutate(r *rand.Rand, amount float32) Genome {
 	m.Hoppy = n(g.Hoppy, 0, 1)
 	m.Speed = n(g.Speed, 0.5, 1.5)
 	m.LR = n(g.LR, 0.01, 0.1)
-	m.Temp = n(g.Temp, 0.06, 0.45)
+	m.Temp = n(g.Temp, 0.05, 0.35)
 	m.Curious = n(g.Curious, 0.2, 2)
 	m.Metab = n(g.Metab, 0.6, 1.4)
 	if g.Lumpy > 0 || chance(0.15) {

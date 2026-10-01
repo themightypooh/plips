@@ -7,6 +7,7 @@ import "math"
 type Renderer struct {
 	W, H                             int
 	den, ar, ag, ab, aa, rim, sh, lb []float32
+	scratch                          []byte
 	// Alpha of the pixel last drawn; used for click-through hit tests.
 	Alpha []uint8
 }
@@ -23,6 +24,14 @@ const thresh = 0.55
 // background of the same size, or nil for a transparent one.
 func (r *Renderer) Render(w *World, dst, bg []byte) {
 	W, H := r.W, r.H
+	if len(w.Objects) > 0 && bg != nil {
+		if len(r.scratch) != len(bg) {
+			r.scratch = make([]byte, len(bg))
+		}
+		copy(r.scratch, bg)
+		drawObjects(w, r.scratch, W, H)
+		bg = r.scratch
+	}
 	for i := range r.den {
 		r.den[i], r.ar[i], r.ag[i], r.ab[i], r.aa[i], r.rim[i], r.sh[i], r.lb[i] = 0, 0, 0, 0, 0, 0, 0, 0
 	}

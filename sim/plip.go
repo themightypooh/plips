@@ -36,14 +36,40 @@ type Plip struct {
 	StealFrom uint8 // plip ID being nibbled, 0 = none
 	stealCD   int
 
-	// current decision
+	// current decision (see mind.go)
 	Act, Tgt     int
 	actT, actMax int
-	feat         [NF]float32
+	x            []float32
+	sit          Situation
 	startBad     float32
+	startHunger  float32
+	startPain    float32
+	startTick    int
 	tgtX         float32
+	tgtStartX    float32
 	tgtOK        bool
+	bumped       bool
+	out          [NO]float32
+	prevX        []float32
+	prevR        float32
+	recentSurp   [NT]float32
+	petTeach     map[[2]int]int
+
 	LastReward   float32
+	LastSurprise float32
+	SurpriseAt   int // target that last surprised it
+	Expect       [NO]float32
+	Diary        []DiaryEntry
+	Seen         map[string]bool
+	BoxFood      int
+	lastNote     int
+	favourite    int
+	favAt        int
+	Eaten        int
+	Stats        [NT][NA]struct {
+		N                int
+		Reward, Surprise float32
+	}
 
 	wanderT int
 	Age     int
@@ -91,6 +117,8 @@ func NewPlip(g Genome, name string, withBrain bool) *Plip {
 	if withBrain {
 		p.Brain = NewBrain(g)
 		p.Drives = [NDrive]float32{0.3, 0, 0.3, 0.2, 0.1}
+		p.Seen = map[string]bool{}
+		p.favourite = -1
 	}
 	return p
 }
@@ -270,251 +298,6 @@ func (p *Plip) idle(w *World) {
 			p.Hop = 1
 		}
 	}
-}
-
-func (p *Plip) bad() float32 {
-	var s float32
-	for i, v := range p.Drives {
-		s += v * driveWeight[i]
-	}
-	return s
-}
-
-func (p *Plip) drift(w *World) {
-	d := &p.Drives
-	d[Hunger] += 0.00006 * p.G.Metab
-	d[Boredom] += 0.00005
-	d[Tired] += 0.000015
-	if p.Moving {
-		d[Tired] += 0.00002
-	}
-	if o := w.Other(p); o != nil {
-		if math.Abs(float64(o.MX-p.MX)) > 60 {
-			d[Lonely] += 0.00004
-		} else {
-			d[Lonely] -= 0.0001
-		}
-	} else {
-		d[Lonely] += 0.00002
-	}
-	d[Pain] *= 0.998
-	for i := range d {
-		d[i] = clamp01(d[i])
-	}
-}
-
-// Ate is called for each food particle absorbed.
-func (p *Plip) Ate(col int) {
-	if col < 0 || col >= NCol {
-		return
-	}
-	p.Drives[Hunger] = clamp01(p.Drives[Hunger] - 0.02*p.G.Taste[col])
-	p.Drives[Boredom] = clamp01(p.Drives[Boredom] - 0.002)
-}
-
-func (p *Plip) Hurt(x float32) {
-	p.Drives[Pain] = clamp01(p.Drives[Pain] + x)
-	p.Flinch = 20
-}
-
-// Pet rewards whatever the plip is doing right now.
-func (p *Plip) Pet() {
-	p.Happy = 50
-	if p.Brain == nil {
-		if p.Hop == 0 {
-			p.Hop = 1
-		}
-		return
-	}
-	p.Brain.Learn(p.Act, &p.feat, 0.9, p.G.LR)
-	p.Drives[Boredom] = clamp01(p.Drives[Boredom] - 0.15)
-	p.Drives[Lonely] = clamp01(p.Drives[Lonely] - 0.1)
-}
-
-// Poke punishes whatever the plip is doing and knocks some of it loose.
-func (p *Plip) Poke(w *World, x, y float32) {
-	for i := 0; i < w.N; i++ {
-		if w.Own[i] != uint8(p.ID) {
-			continue
-		}
-		dx, dy := w.X[i]-x, w.Y[i]-y
-		d := hypot(dx, dy)
-		if d < 9 {
-			f := (1-d/9)*2.4 + 0.3
-			w.X[i] += dx / (d + 0.01) * f * 0.5
-			w.Y[i] += dy/(d+0.01)*f*0.5 - f*0.4
-			if d < 5 && w.Role[i] == 0 && w.Rng.Float32() < 0.4 && p.Mass > MinMass {
-				w.Own[i] = 0 // knocked loose; it can slurp its own goo back up
-				w.Age[i] = 0
-			}
-		}
-	}
-	p.Hurt(0.35)
-	p.Flinch = 40
-	if p.Hop == 0 {
-		p.Hop = 1
-	}
-	if p.Brain != nil {
-		p.Brain.Learn(p.Act, &p.feat, -0.9, p.G.LR)
-	}
-}
-
-// Doing describes the current action for the HUD.
-func (p *Plip) Doing(w *World) string {
-	if p.Brain == nil || p.actMax == 0 {
-		return ""
-	}
-	if p.Act == ARest || p.Act == AHop {
-		return ActNames[p.Act]
-	}
-	return ActNames[p.Act] + " " + p.TargetName(w, p.Tgt)
-}
-
-func (p *Plip) TargetName(w *World, t int) string {
-	switch {
-	case t < NCol:
-		return Colours[t].Name
-	case t == TOther:
-		if o := w.Other(p); o != nil {
-			return o.Name
-		}
-		return "friend"
-	case t == THand:
-		return "you"
-	}
-	return ""
-}
-
-// food scans the floor for the nearest loose puddle of each colour.
-func (p *Plip) food(w *World) (pos [NCol]float32, ok [NCol]bool) {
-	var best [NCol]float32
-	for i := range best {
-		best[i] = 1e9
-	}
-	for i := 0; i < w.N; i++ {
-		if w.Own[i] != 0 || w.Mat[i] == 0 || w.Y[i] < w.Floor-14 {
-			continue
-		}
-		c := int(w.Mat[i]) - 1
-		d := float32(math.Abs(float64(w.X[i] - p.CoreX)))
-		if d < best[c] {
-			best[c], pos[c], ok[c] = d, w.X[i], true
-		}
-	}
-	return
-}
-
-func (p *Plip) think(w *World) {
-	if p.actMax == 0 {
-		p.decide(w)
-	}
-	p.actT++
-	o := w.Other(p)
-
-	// keep tracking the target
-	switch {
-	case p.Tgt < NCol:
-		if p.actT%15 == 1 {
-			pos, ok := p.food(w)
-			p.tgtX, p.tgtOK = pos[p.Tgt], ok[p.Tgt]
-		}
-	case p.Tgt == TOther:
-		p.tgtOK = o != nil
-		if o != nil {
-			p.tgtX = o.MX
-		}
-	case p.Tgt == THand:
-		p.tgtOK = w.Hand.Visible
-		p.tgtX = w.Hand.X
-	default:
-		p.tgtOK, p.tgtX = true, p.CoreX
-	}
-	near := float32(math.Abs(float64(p.CoreX-p.tgtX))) < p.Rad+4
-	if p.Tgt == TOther && o != nil {
-		near = float32(math.Abs(float64(p.CoreX-p.tgtX))) < p.Rad+o.Rad+5
-	}
-
-	done := p.actT >= p.actMax || !p.tgtOK
-	switch p.Act {
-	case AApproach:
-		p.TX = p.tgtX
-		if near {
-			p.Drives[Boredom] = clamp01(p.Drives[Boredom] - 0.04)
-			done = true
-		}
-	case AEat:
-		p.TX = p.tgtX
-		if p.Tgt < NCol {
-			p.EatCol = p.Tgt
-		} else if p.Tgt == TOther && o != nil {
-			p.StealFrom = uint8(o.ID)
-		}
-	case ARetreat:
-		if p.actT == 1 {
-			p.TX = p.CoreX - sign(p.tgtX-p.CoreX)*50
-		}
-	case APlay:
-		p.TX = p.tgtX
-		if near {
-			p.Drives[Boredom] = clamp01(p.Drives[Boredom] - 0.0025)
-			if p.Tgt == TOther && o != nil {
-				p.Drives[Lonely] = clamp01(p.Drives[Lonely] - 0.003)
-				o.Drives[Lonely] = clamp01(o.Drives[Lonely] - 0.0015)
-				o.Drives[Boredom] = clamp01(o.Drives[Boredom] - 0.001)
-			}
-			if p.Hop == 0 && w.Rng.Float32() < 0.012 {
-				p.Hop = 1
-			}
-		}
-	case ARest:
-		p.TX = p.CoreX
-		p.Resting = true
-		p.Drives[Tired] = clamp01(p.Drives[Tired] - 0.0015)
-	case AHop:
-		if p.actT == 1 {
-			p.Hop = 1
-			p.Drives[Boredom] = clamp01(p.Drives[Boredom] - 0.05)
-			p.Drives[Tired] = clamp01(p.Drives[Tired] + 0.01)
-		}
-		done = p.actT > 46
-	}
-	if done {
-		reward := (p.startBad - p.bad()) * 4
-		p.Brain.Learn(p.Act, &p.feat, reward, p.G.LR)
-		p.LastReward = reward
-		p.actMax = 0
-	}
-}
-
-func (p *Plip) decide(w *World) {
-	type opt struct{ a, t int }
-	var opts []opt
-	_, ok := p.food(w)
-	for c := 0; c < NCol; c++ {
-		if ok[c] {
-			opts = append(opts, opt{AApproach, c}, opt{AEat, c}, opt{ARetreat, c}, opt{APlay, c})
-		}
-	}
-	if o := w.Other(p); o != nil && o.Mass > 10 {
-		opts = append(opts, opt{AApproach, TOther}, opt{AEat, TOther}, opt{ARetreat, TOther}, opt{APlay, TOther})
-	}
-	if w.Hand.Visible {
-		opts = append(opts, opt{AApproach, THand}, opt{ARetreat, THand}, opt{APlay, THand})
-	}
-	opts = append(opts, opt{ARest, TNone}, opt{AHop, TNone})
-
-	scores := make([]float32, len(opts))
-	for i, o := range opts {
-		f := Features(p.Drives, o.t)
-		scores[i] = p.Brain.Score(o.a, &f)
-	}
-	c := opts[softmaxPick(w.Rng, scores, p.G.Temp)]
-	p.Act, p.Tgt = c.a, c.t
-	p.feat = Features(p.Drives, c.t)
-	p.startBad = p.bad()
-	p.actT = 0
-	p.actMax = [NA]int{300, 420, 180, 360, 420, 60}[c.a]
-	p.tgtOK = true
 }
 
 // RandomName makes a short soft name.
