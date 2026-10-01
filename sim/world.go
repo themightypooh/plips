@@ -211,14 +211,52 @@ func (w *World) PlipAt(x, y float32) *Plip {
 	return nil
 }
 
-// Other returns the plip's companion, or nil if it's alone.
+// Other returns the nearest other plip, or nil if it's alone.
 func (w *World) Other(p *Plip) *Plip {
+	var best *Plip
+	bd := float32(1e9)
 	for _, o := range w.Plips {
-		if o != p {
-			return o
+		if o == p {
+			continue
+		}
+		if d := hypot(o.MX-p.MX, o.MY-p.MY); d < bd {
+			best, bd = o, d
 		}
 	}
-	return nil
+	return best
+}
+
+// RemovePlip takes a plip out of the world, body and all.
+func (w *World) RemovePlip(p *Plip) {
+	id := uint8(p.ID)
+	for i := 0; i < w.N; {
+		if w.Own[i] == id {
+			w.remove(i)
+			continue
+		}
+		i++
+	}
+	w.Plips = append(w.Plips[:p.ID-1], w.Plips[p.ID:]...)
+	for k, q := range w.Plips {
+		q.ID = k + 1
+		q.StealFrom = 0
+	}
+	for i := 0; i < w.N; i++ {
+		if w.Own[i] > id {
+			w.Own[i]--
+		}
+	}
+}
+
+// ClearLoose removes all spilled liquid.
+func (w *World) ClearLoose() {
+	for i := 0; i < w.N; {
+		if w.Own[i] == 0 {
+			w.remove(i)
+			continue
+		}
+		i++
+	}
 }
 
 // BodyColours returns a plip's body colours, one per particle, for saving.

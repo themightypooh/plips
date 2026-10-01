@@ -6,8 +6,6 @@ import (
 	"math/rand"
 
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
-	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 
 	"plips/sim"
@@ -18,54 +16,98 @@ const (
 	cellW, cellH, cellFloor = 108, 80, 70
 	gCols, gRows            = 4, 3
 	galleryW, galleryH      = cellW * gCols, cellH * gRows
-	galleryScale            = 3
+	nCells                  = gCols * gRows
 )
 
 type cell struct {
-	g       sim.Genome
-	w       *sim.World
-	r       *sim.Renderer
-	starred bool
+	g sim.Genome
+	w *sim.World
+	r *sim.Renderer
 }
 
 type Gallery struct {
-	cells  [gCols * gRows]*cell
-	bg     []byte
-	buf    []byte
-	canvas []byte
-	img    *ebiten.Image
-	rng    *rand.Rand
-	stars  []sim.Genome
-	hover  int
-	gen    int
+	cells    []*cell
+	batch    []*cell // the working batch, kept while looking at starred ones
+	starView bool
+	selected int
+	hover    int
+	gen      int
+	stars    []sim.Genome
+
+	bg, buf, canvas []byte
+	img             *ebiten.Image
+	rng             *rand.Rand
 }
 
 func NewGallery(rng *rand.Rand) *Gallery {
 	g := &Gallery{
-		bg:     sim.CellBackground(cellW, cellH, cellFloor),
-		buf:    make([]byte, cellW*cellH*4),
-		canvas: make([]byte, galleryW*galleryH*4),
-		img:    ebiten.NewImage(galleryW, galleryH),
-		rng:    rng,
-		hover:  -1,
+		bg:       sim.CellBackground(cellW, cellH, cellFloor),
+		buf:      make([]byte, cellW*cellH*4),
+		canvas:   make([]byte, galleryW*galleryH*4),
+		img:      ebiten.NewImage(galleryW, galleryH),
+		rng:      rng,
+		selected: -1,
+		hover:    -1,
 	}
 	load("favourites.json", &g.stars)
-	for i := range g.cells {
-		g.set(i, sim.RandomGenome(rng))
-	}
+	g.NewBatch()
 	return g
 }
 
-func (g *Gallery) set(i int, gn sim.Genome) {
+func (g *Gallery) makeCell(gn sim.Genome) *cell {
 	w := sim.NewWorld(cellW, cellH, cellFloor, g.rng.Int63())
 	w.AddPlip(sim.NewPlip(gn, "", false), cellW/2, nil)
 	for k := 0; k < 120; k++ {
 		w.Step()
 	}
-	g.cells[i] = &cell{g: gn, w: w, r: sim.NewRenderer(cellW, cellH), starred: g.isStarred(gn)}
+	return &cell{g: gn, w: w, r: sim.NewRenderer(cellW, cellH)}
 }
 
-func (g *Gallery) isStarred(gn sim.Genome) bool {
+func (g *Gallery) NewBatch() {
+	g.batch = g.batch[:0]
+	for i := 0; i < nCells; i++ {
+		g.batch = append(g.batch, g.makeCell(sim.RandomGenome(g.rng)))
+	}
+	g.gen = 0
+	g.ShowStarred(false)
+}
+
+// Breed refills the batch with variations of the selected plip.
+func (g *Gallery) Breed() {
+	parent, ok := g.Selected()
+	if !ok {
+		return
+	}
+	g.batch = []*cell{g.makeCell(parent)}
+	for len(g.batch) < nCells {
+		g.batch = append(g.batch, g.makeCell(parent.Mutate(g.rng, 0.55)))
+	}
+	g.gen++
+	g.ShowStarred(false)
+	g.selected = 0
+}
+
+func (g *Gallery) ShowStarred(on bool) {
+	g.starView = on
+	g.selected = -1
+	if !on {
+		g.cells = g.batch
+		return
+	}
+	g.cells = nil
+	for i := len(g.stars) - 1; i >= 0 && len(g.cells) < nCells; i-- {
+		g.cells = append(g.cells, g.makeCell(g.stars[i]))
+	}
+}
+
+func (g *Gallery) Selected() (sim.Genome, bool) {
+	if g.selected < 0 || g.selected >= len(g.cells) {
+		return sim.Genome{}, false
+	}
+	return g.cells[g.selected].g, true
+}
+
+func (g *Gallery) IsStarred(gn sim.Genome) bool {
 	for _, s := range g.stars {
 		if s.Instinct == gn.Instinct {
 			return true
@@ -74,46 +116,34 @@ func (g *Gallery) isStarred(gn sim.Genome) bool {
 	return false
 }
 
-func (g *Gallery) toggleStar(i int) {
-	c := g.cells[i]
-	if c.starred {
+func (g *Gallery) ToggleStar() {
+	gn, ok := g.Selected()
+	if !ok {
+		return
+	}
+	if g.IsStarred(gn) {
 		for k, s := range g.stars {
-			if s.Instinct == c.g.Instinct {
+			if s.Instinct == gn.Instinct {
 				g.stars = append(g.stars[:k], g.stars[k+1:]...)
 				break
 			}
 		}
 	} else {
-		g.stars = append(g.stars, c.g)
+		g.stars = append(g.stars, gn)
 	}
-	c.starred = !c.starred
 	save("favourites.json", g.stars)
 }
 
-// Update handles input; sx, sy are cursor coords in gallery pixels.
-func (g *Gallery) Update(sx, sy float32) {
+// Update steps the cells; (sx, sy) is the cursor in gallery pixels.
+func (g *Gallery) Update(sx, sy float32, inside, click bool) {
 	g.hover = -1
-	if sx >= 0 && sy >= 0 && sx < galleryW && sy < galleryH {
-		g.hover = int(sy)/cellH*gCols + int(sx)/cellW
-	}
-	if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
-		for i := range g.cells {
-			g.set(i, sim.RandomGenome(g.rng))
-		}
-		g.gen = 0
-	}
-	if g.hover >= 0 {
-		if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
-			parent := g.cells[g.hover]
-			for i := range g.cells {
-				if i != g.hover {
-					g.set(i, parent.g.Mutate(g.rng, 0.55))
-				}
+	if inside {
+		i := int(sy)/cellH*gCols + int(sx)/cellW
+		if i < len(g.cells) {
+			g.hover = i
+			if click {
+				g.selected = i
 			}
-			g.gen++
-		}
-		if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonRight) {
-			g.toggleStar(g.hover)
 		}
 	}
 	for _, c := range g.cells {
@@ -123,6 +153,15 @@ func (g *Gallery) Update(sx, sy float32) {
 }
 
 func (g *Gallery) Draw(screen *ebiten.Image, ox, oy, s float64) {
+	for i := range g.canvas {
+		g.canvas[i] = 0
+	}
+	for y := 0; y < galleryH; y++ {
+		for x := 0; x < galleryW; x++ {
+			p := (y*galleryW + x) * 4
+			g.canvas[p], g.canvas[p+1], g.canvas[p+2], g.canvas[p+3] = 14, 16, 17, 255
+		}
+	}
 	for i, c := range g.cells {
 		c.r.Render(c.w, g.buf, g.bg)
 		x0, y0 := (i%gCols)*cellW, (i/gCols)*cellH
@@ -140,20 +179,31 @@ func (g *Gallery) Draw(screen *ebiten.Image, ox, oy, s float64) {
 		x := float32(ox) + float32((i%gCols)*cellW)*float32(s)
 		y := float32(oy) + float32((i/gCols)*cellH)*float32(s)
 		cw, ch := float32(cellW)*float32(s), float32(cellH)*float32(s)
-		vector.StrokeRect(screen, x+0.5, y+0.5, cw-1, ch-1, 1, color.RGBA{12, 14, 15, 255}, false)
-		if i == g.hover {
-			vector.StrokeRect(screen, x+2, y+2, cw-4, ch-4, 2, color.RGBA{150, 170, 160, 255}, false)
+		vector.StrokeRect(screen, x+0.5, y+0.5, cw-1, ch-1, 1, color.RGBA{10, 12, 13, 255}, false)
+		switch {
+		case i == g.selected:
+			vector.StrokeRect(screen, x+2, y+2, cw-4, ch-4, 3, colAccent, false)
+		case i == g.hover:
+			vector.StrokeRect(screen, x+2, y+2, cw-4, ch-4, 1, colDim, false)
 		}
-		label := fmt.Sprintf("%s  %d", c.g.Describe(), c.g.Mass)
-		if c.starred {
+		label := c.g.Describe()
+		if g.IsStarred(c.g) {
 			label = "* " + label
 		}
-		ebitenutil.DebugPrintAt(screen, label, int(x)+8, int(y+ch)-20)
+		drawText(screen, label, float64(x)+10, float64(y+ch)-24, 13, colDim)
 	}
-	hint := "click: variations of this one   right-click: star it   space: all new   F2 room  F3 desktop"
-	if g.gen > 0 {
-		hint = fmt.Sprintf("generation %d   ", g.gen) + hint
+	if g.starView && len(g.cells) == 0 {
+		drawText(screen, "Nothing starred yet. Go back to the batch, select a plip you like and press Star.", ox+20, oy+20, 15, colDim)
 	}
-	ebitenutil.DebugPrintAt(screen, hint, int(ox)+8, int(oy)+6)
-	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("%d starred (your pets hatch from these)", len(g.stars)), int(ox)+8, int(oy)+22)
+}
+
+// Caption is the status line for the bottom bar.
+func (g *Gallery) Caption() string {
+	switch {
+	case g.starView:
+		return fmt.Sprintf("%d starred", len(g.stars))
+	case g.gen > 0:
+		return fmt.Sprintf("generation %d", g.gen)
+	}
+	return "fresh batch"
 }

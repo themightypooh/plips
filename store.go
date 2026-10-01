@@ -10,10 +10,8 @@ import (
 
 // Settings is the user-editable config at %APPDATA%\Plips\settings.json.
 type Settings struct {
-	Mode         string `json:"mode"`         // "gallery", "room" or "desktop"
-	DesktopScale int    `json:"desktopScale"` // screen pixels per plip pixel on the desktop
-	RoomScale    int    `json:"roomScale"`
-	ShowInfo     bool   `json:"showInfo"`
+	Mode     string `json:"mode"` // "gallery" or "room"
+	ShowInfo bool   `json:"showInfo"`
 }
 
 // SavedPlip is one pet as stored in pets.json.
@@ -57,13 +55,7 @@ func save(name string, v any) {
 }
 
 func loadSettings() Settings {
-	s := Settings{Mode: "gallery", DesktopScale: 3, RoomScale: 4, ShowInfo: true}
+	s := Settings{Mode: "gallery", ShowInfo: true}
 	load("settings.json", &s)
-	if s.DesktopScale < 1 {
-		s.DesktopScale = 3
-	}
-	if s.RoomScale < 1 {
-		s.RoomScale = 4
-	}
 	return s
 }
